@@ -102,10 +102,7 @@ void Log(const char* fmt, ...)
 	va_start(args, fmt);
 	std::vsnprintf(body, sizeof(body), fmt, args);
 	va_end(args);
-
-	char line[1024] = {};
-	std::snprintf(line, sizeof(line), "ToyStory2Fix:ModernDepth: %s", body);
-	OutputDebugStringA(line);
+	ts2fix::Log("ModernDepth", "%s", body);
 }
 
 std::string GetModuleDirectory()
