@@ -1,5 +1,8 @@
 #include "stdafx.h"
 #include <MMSystem.h>
+#include <cstddef>
+#include <cstdarg>
+#include <cstdio>
 #include <intrin.h>
 
 #pragma intrinsic(_ReturnAddress)
@@ -8,23 +11,242 @@ uintptr_t sub_490860_addr;
 uintptr_t sub_49D910_addr;
 TIMECAPS tc;
 LARGE_INTEGER Frequency;
-LARGE_INTEGER PreviousTime, CurrentTime, ElapsedMicroseconds;
 int sleepTime;
 int framerateFactor;
 int targetFrameTimeUs = 16667;
 int sleepFrameBudgetUs = 16949;
-int64_t simulationAccumulatorUs = 0;
 bool refreshRateProbePending = false;
 bool zeroSpeedSafetyReady = false;
 uint32_t targetRefreshRateOverride = 0;
 uintptr_t gameplayFrameTimerReturnAddress = 0;
 uintptr_t frontendFrameTimerReturnAddress = 0;
 uintptr_t menuFrameTimerReturnAddress = 0;
+bool framerateDiagnostics = false;
+bool autoFallbackTo60 = true;
+bool allowFrontendCustomTiming = false;
+bool allowFrontendZeroStep = false;
+uint32_t startupGuardMs = 5000;
+ULONGLONG framerateInitTickMs = 0;
+
+enum class FrameTimerCallsite : uint8_t
+{
+	Unknown = 0,
+	Gameplay,
+	Frontend,
+	Menu,
+	Count
+};
+
+enum class FrameTimerMode : uint8_t
+{
+	LegacyPassthrough = 0,
+	CustomSafe60,
+	CustomZeroStep
+};
+
+struct FrameTimerState
+{
+	FrameTimerMode mode = FrameTimerMode::LegacyPassthrough;
+	LARGE_INTEGER previousTime = {};
+	int64_t simulationAccumulatorUs = 0;
+	uint32_t consecutiveZeroFrames = 0;
+	uint32_t framesSinceNonZero = 0;
+	uint32_t modeSwitchCount = 0;
+};
+
+FrameTimerState frameTimerStates[static_cast<std::size_t>(FrameTimerCallsite::Count)];
 
 uintptr_t ResolveRelativeCall(uint8_t* callInstruction)
 {
 	int32_t relativeTarget = *reinterpret_cast<int32_t*>(callInstruction + 1);
 	return reinterpret_cast<uintptr_t>(callInstruction + 5 + relativeTarget);
+}
+
+const char* GetCallsiteName(FrameTimerCallsite callsite)
+{
+	switch (callsite)
+	{
+	case FrameTimerCallsite::Gameplay:
+		return "Gameplay";
+	case FrameTimerCallsite::Frontend:
+		return "Frontend";
+	case FrameTimerCallsite::Menu:
+		return "Menu";
+	default:
+		return "Unknown";
+	}
+}
+
+const char* GetModeName(FrameTimerMode mode)
+{
+	switch (mode)
+	{
+	case FrameTimerMode::LegacyPassthrough:
+		return "LegacyPassthrough";
+	case FrameTimerMode::CustomSafe60:
+		return "CustomSafe60";
+	case FrameTimerMode::CustomZeroStep:
+		return "CustomZeroStep";
+	default:
+		return "Unknown";
+	}
+}
+
+void LogMessage(const char* format, ...)
+{
+	char buffer[512] = {};
+	va_list args;
+	va_start(args, format);
+	std::vsnprintf(buffer, sizeof(buffer), format, args);
+	va_end(args);
+	OutputDebugStringA(buffer);
+}
+
+void LogDiagnostic(const char* format, ...)
+{
+	if (!framerateDiagnostics)
+		return;
+
+	char buffer[512] = {};
+	va_list args;
+	va_start(args, format);
+	std::vsnprintf(buffer, sizeof(buffer), format, args);
+	va_end(args);
+	OutputDebugStringA(buffer);
+}
+
+FrameTimerState& GetFrameTimerState(FrameTimerCallsite callsite)
+{
+	return frameTimerStates[static_cast<std::size_t>(callsite)];
+}
+
+FrameTimerCallsite GetFrameTimerCallsite(uintptr_t returnAddress)
+{
+	if (returnAddress == gameplayFrameTimerReturnAddress)
+		return FrameTimerCallsite::Gameplay;
+	if (returnAddress == frontendFrameTimerReturnAddress)
+		return FrameTimerCallsite::Frontend;
+	if (returnAddress == menuFrameTimerReturnAddress)
+		return FrameTimerCallsite::Menu;
+	return FrameTimerCallsite::Unknown;
+}
+
+bool IsStartupGuardActive()
+{
+	if (startupGuardMs == 0 || framerateInitTickMs == 0)
+		return false;
+	return (GetTickCount64() - framerateInitTickMs) < startupGuardMs;
+}
+
+void ResetFrameTimerState(FrameTimerState& state)
+{
+	state.previousTime.QuadPart = 0;
+	state.simulationAccumulatorUs = 0;
+	state.consecutiveZeroFrames = 0;
+	state.framesSinceNonZero = 0;
+}
+
+void SetFrameTimerMode(FrameTimerCallsite callsite, FrameTimerMode newMode, const char* reason)
+{
+	auto& state = GetFrameTimerState(callsite);
+	if (state.mode == newMode)
+		return;
+
+	const FrameTimerMode oldMode = state.mode;
+	state.mode = newMode;
+	state.modeSwitchCount += 1;
+	ResetFrameTimerState(state);
+	LogMessage("ToyStory2Fix: FrameTimer %s %s -> %s (%s)\n",
+		GetCallsiteName(callsite), GetModeName(oldMode), GetModeName(newMode), reason);
+}
+
+int64_t QueryElapsedMicroseconds(const LARGE_INTEGER& previousTime, LARGE_INTEGER& currentTime)
+{
+	QueryPerformanceCounter(&currentTime);
+	if (Frequency.QuadPart == 0)
+		return 0;
+
+	int64_t elapsedUs = currentTime.QuadPart - previousTime.QuadPart;
+	elapsedUs *= 1000000;
+	elapsedUs /= Frequency.QuadPart;
+	return elapsedUs;
+}
+
+void InitializeFrameTimerModes()
+{
+	for (auto& state : frameTimerStates)
+	{
+		state.mode = FrameTimerMode::LegacyPassthrough;
+		state.modeSwitchCount = 0;
+		ResetFrameTimerState(state);
+	}
+
+	// Gameplay should always run in custom mode; zero-step only when safety patches are available.
+	SetFrameTimerMode(FrameTimerCallsite::Gameplay,
+		zeroSpeedSafetyReady ? FrameTimerMode::CustomZeroStep : FrameTimerMode::CustomSafe60,
+		"initial setup");
+
+	if (allowFrontendCustomTiming)
+	{
+		const FrameTimerMode frontendMode =
+			(allowFrontendZeroStep && zeroSpeedSafetyReady) ? FrameTimerMode::CustomZeroStep : FrameTimerMode::CustomSafe60;
+		SetFrameTimerMode(FrameTimerCallsite::Frontend, frontendMode, "initial setup");
+		SetFrameTimerMode(FrameTimerCallsite::Menu, frontendMode, "initial setup");
+	}
+	else
+	{
+		LogDiagnostic("ToyStory2Fix: Frontend/Menu frame timer running in legacy mode.\n");
+	}
+}
+
+void HandleAnomalyFallback(FrameTimerCallsite callsite, FrameTimerState& state, bool isDemoMode, int speedMultiplier, int frameTimeUs)
+{
+	if (isDemoMode || state.mode != FrameTimerMode::CustomZeroStep)
+	{
+		state.consecutiveZeroFrames = 0;
+		state.framesSinceNonZero = 0;
+		return;
+	}
+
+	if (speedMultiplier == 0)
+	{
+		state.consecutiveZeroFrames += 1;
+		state.framesSinceNonZero += 1;
+	}
+	else
+	{
+		state.consecutiveZeroFrames = 0;
+		state.framesSinceNonZero = 0;
+	}
+
+	if (!autoFallbackTo60)
+		return;
+
+	uint32_t zeroFrameThreshold = 120;
+	uint64_t zeroStepTimeThresholdUs = 2000000ULL;
+
+	if (callsite != FrameTimerCallsite::Gameplay && IsStartupGuardActive())
+	{
+		zeroFrameThreshold = 24;
+		zeroStepTimeThresholdUs = 400000ULL;
+	}
+
+	const uint64_t noStepElapsedUs =
+		static_cast<uint64_t>(state.framesSinceNonZero) * static_cast<uint64_t>(std::max(frameTimeUs, 1));
+	const bool tooManyZeroFrames = state.consecutiveZeroFrames >= zeroFrameThreshold;
+	const bool noStepTooLong = noStepElapsedUs >= zeroStepTimeThresholdUs;
+
+	if (!tooManyZeroFrames && !noStepTooLong)
+		return;
+
+	if (callsite == FrameTimerCallsite::Gameplay)
+	{
+		SetFrameTimerMode(callsite, FrameTimerMode::CustomSafe60, "anomaly detected");
+	}
+	else
+	{
+		SetFrameTimerMode(callsite, FrameTimerMode::LegacyPassthrough, "anomaly detected");
+	}
 }
 
 void ApplyRefreshRate(uint32_t refreshRate)
@@ -34,7 +256,8 @@ void ApplyRefreshRate(uint32_t refreshRate)
 
 	targetFrameTimeUs = (1000000 + (refreshRate / 2)) / refreshRate;
 	sleepFrameBudgetUs = targetFrameTimeUs + std::max(1, targetFrameTimeUs / 60);
-	simulationAccumulatorUs = 0;
+	for (auto& state : frameTimerStates)
+		ResetFrameTimerState(state);
 }
 
 uint32_t GetDesktopRefreshRate()
@@ -205,20 +428,99 @@ bool InstallZeroSpeedSafetyPatches()
 	return ready;
 }
 
-void UpdateElapsedMicroseconds() {
-	if (Frequency.QuadPart == 0)
+int RunCustomFrameTimer(FrameTimerCallsite callsite, FrameTimerState& state, bool allowZeroStepSimulation)
+{
+	const UINT timerPeriod = tc.wPeriodMin ? tc.wPeriodMin : 1;
+	const int frameTimeUs = std::max(targetFrameTimeUs, 1);
+	const int frameBudgetUs = std::max(sleepFrameBudgetUs, frameTimeUs);
+	const bool isDemoMode = *Variables.isDemoMode;
+	constexpr int gameplayFrameTimeUs = 16667;
+	int effectiveFrameTimeUs = frameTimeUs;
+	int effectiveFrameBudgetUs = frameBudgetUs;
+	if (isDemoMode)
 	{
-		ElapsedMicroseconds.QuadPart = 0;
-		return;
+		// Keep demo mode pacing tied to the original 60->30 behavior.
+		effectiveFrameTimeUs = 16667;
+		effectiveFrameBudgetUs = 16949;
+	}
+	else if (!allowZeroStepSimulation && frameTimeUs < gameplayFrameTimeUs)
+	{
+		// If zero-step simulation is unavailable, keep simulation at safe 60 Hz pacing.
+		effectiveFrameTimeUs = gameplayFrameTimeUs;
+		effectiveFrameBudgetUs = gameplayFrameTimeUs + std::max(1, gameplayFrameTimeUs / 60);
+	}
+	timeBeginPeriod(timerPeriod);
+
+	if (state.previousTime.QuadPart == 0)
+		QueryPerformanceCounter(&state.previousTime);
+
+	LARGE_INTEGER currentTime = {};
+	int64_t elapsedUs = QueryElapsedMicroseconds(state.previousTime, currentTime);
+	if (elapsedUs < 0)
+		elapsedUs = 0;
+
+	if (isDemoMode)
+	{
+		state.simulationAccumulatorUs = 0;
+		framerateFactor = (static_cast<int>(elapsedUs) / gameplayFrameTimeUs) + 1;
+		// Demo mode needs 30fps maximum.
+		if (framerateFactor < 2)
+			framerateFactor = 2;
+		framerateFactor = std::clamp(framerateFactor, 1, 3);
+		*Variables.speedMultiplier = static_cast<uint32_t>(framerateFactor);
+		state.consecutiveZeroFrames = 0;
+		state.framesSinceNonZero = 0;
+	}
+	else
+	{
+		// Keep simulation updates anchored to the original 60 Hz timing.
+		state.simulationAccumulatorUs += elapsedUs;
+		const int64_t maxAccumulatorUs = static_cast<int64_t>(gameplayFrameTimeUs) * 16;
+		if (state.simulationAccumulatorUs > maxAccumulatorUs)
+			state.simulationAccumulatorUs = maxAccumulatorUs;
+
+		const int desiredSteps = std::clamp(static_cast<int>(state.simulationAccumulatorUs / gameplayFrameTimeUs), 0, 3);
+		if (desiredSteps > 0)
+			state.simulationAccumulatorUs -= static_cast<int64_t>(desiredSteps) * gameplayFrameTimeUs;
+
+		const int minSpeedMultiplier = allowZeroStepSimulation ? 0 : 1;
+		framerateFactor = std::clamp(desiredSteps, minSpeedMultiplier, 3);
+
+		// If we had to force a minimum of 1, consume that fixed-step from the accumulator too.
+		if (framerateFactor > desiredSteps)
+		{
+			state.simulationAccumulatorUs -= static_cast<int64_t>(framerateFactor - desiredSteps) * gameplayFrameTimeUs;
+			if (state.simulationAccumulatorUs < 0)
+				state.simulationAccumulatorUs = 0;
+		}
+
+		*Variables.speedMultiplier = static_cast<uint32_t>(framerateFactor);
+		HandleAnomalyFallback(callsite, state, false, framerateFactor, frameTimeUs);
 	}
 
-	QueryPerformanceCounter(&CurrentTime);
-	ElapsedMicroseconds.QuadPart = CurrentTime.QuadPart - PreviousTime.QuadPart;
-	ElapsedMicroseconds.QuadPart *= 1000000;
-	ElapsedMicroseconds.QuadPart /= Frequency.QuadPart;
+	const int pacingFactor = isDemoMode ? std::max(framerateFactor, 2) : 1;
+	const int pacingFrameTimeUs = effectiveFrameTimeUs * pacingFactor;
+	const int pacingFrameBudgetUs = effectiveFrameBudgetUs * pacingFactor;
+
+	sleepTime = 0;
+	// Loop until next frame due
+	do {
+		sleepTime = static_cast<int>((pacingFrameBudgetUs - elapsedUs) / 1000); // sleep slightly past target frame to limit frame drops
+		sleepTime = ((sleepTime / static_cast<int>(timerPeriod)) * static_cast<int>(timerPeriod)) - static_cast<int>(timerPeriod);
+		if (sleepTime > 0)
+			Sleep(sleepTime); // sleep to avoid wasted CPU
+		elapsedUs = QueryElapsedMicroseconds(state.previousTime, currentTime);
+		if (elapsedUs < 0)
+			elapsedUs = 0;
+	} while (elapsedUs < pacingFrameTimeUs);
+
+	state.previousTime = currentTime;
+	timeEndPeriod(timerPeriod);
+	return static_cast<int>(state.previousTime.QuadPart / 1000);
 }
 
-int __cdecl sub_490860(int a1) {
+int __cdecl sub_490860(int a1)
+{
 	auto _sub_490860 = (int(__cdecl*)(int))sub_490860_addr;
 	if (Variables.speedMultiplier == nullptr || Variables.isDemoMode == nullptr)
 		return _sub_490860 ? _sub_490860(a1) : 0;
@@ -233,92 +535,24 @@ int __cdecl sub_490860(int a1) {
 		}
 	}
 
-	const UINT timerPeriod = tc.wPeriodMin ? tc.wPeriodMin : 1;
-	const int frameTimeUs = std::max(targetFrameTimeUs, 1);
-	const int frameBudgetUs = std::max(sleepFrameBudgetUs, frameTimeUs);
-	const bool isDemoMode = *Variables.isDemoMode;
-	constexpr int gameplayFrameTimeUs = 16667;
 	const uintptr_t returnAddress = reinterpret_cast<uintptr_t>(_ReturnAddress());
-	const bool isGameplayFrameTimerCall =
-		(gameplayFrameTimerReturnAddress != 0) && (returnAddress == gameplayFrameTimerReturnAddress);
-	const bool allowZeroStepSimulation =
-		zeroSpeedSafetyReady &&
-		!isDemoMode &&
-		isGameplayFrameTimerCall &&
-		frameTimeUs < gameplayFrameTimeUs;
-	int effectiveFrameTimeUs = frameTimeUs;
-	int effectiveFrameBudgetUs = frameBudgetUs;
-	if (isDemoMode)
-	{
-		// Keep demo mode pacing tied to the original 60->30 behavior.
-		effectiveFrameTimeUs = 16667;
-		effectiveFrameBudgetUs = 16949;
-	}
-	else if (!allowZeroStepSimulation && frameTimeUs < gameplayFrameTimeUs)
-	{
-		// If zero-step simulation is unavailable (or this call-site should not use it), keep simulation safe at 60 Hz.
-		effectiveFrameTimeUs = gameplayFrameTimeUs;
-		effectiveFrameBudgetUs = gameplayFrameTimeUs + std::max(1, gameplayFrameTimeUs / 60);
-	}
-	timeBeginPeriod(timerPeriod);
+	const FrameTimerCallsite callsite = GetFrameTimerCallsite(returnAddress);
+	if (callsite == FrameTimerCallsite::Unknown)
+		return _sub_490860 ? _sub_490860(a1) : 0;
 
-	if (PreviousTime.QuadPart == 0)
-		QueryPerformanceCounter(&PreviousTime); // initialise
+	auto& state = GetFrameTimerState(callsite);
 
-	UpdateElapsedMicroseconds();
+	// During early startup, keep non-gameplay paths on the original game timer.
+	if (IsStartupGuardActive() && callsite != FrameTimerCallsite::Gameplay)
+		return _sub_490860 ? _sub_490860(a1) : 0;
 
-	if (isDemoMode)
-	{
-		simulationAccumulatorUs = 0;
-		framerateFactor = ((int)ElapsedMicroseconds.QuadPart / gameplayFrameTimeUs) + 1;
-		// Demo mode needs 30fps maximum.
-		if (framerateFactor < 2)
-			framerateFactor = 2;
-		*Variables.speedMultiplier = std::clamp(framerateFactor, 1, 3);
-	}
-	else
-	{
-		// Keep non-demo simulation updates anchored to the original 60 Hz timing.
-		// At >60 Hz, this naturally yields 0-step render frames.
-		simulationAccumulatorUs += ElapsedMicroseconds.QuadPart;
-		const int64_t maxAccumulatorUs = static_cast<int64_t>(gameplayFrameTimeUs) * 16;
-		if (simulationAccumulatorUs > maxAccumulatorUs)
-			simulationAccumulatorUs = maxAccumulatorUs;
+	if (state.mode == FrameTimerMode::LegacyPassthrough)
+		return _sub_490860 ? _sub_490860(a1) : 0;
 
-		const int desiredSteps = std::clamp(static_cast<int>(simulationAccumulatorUs / gameplayFrameTimeUs), 0, 3);
-		if (desiredSteps > 0)
-			simulationAccumulatorUs -= static_cast<int64_t>(desiredSteps) * gameplayFrameTimeUs;
-
-		const int minSpeedMultiplier = allowZeroStepSimulation ? 0 : 1;
-		framerateFactor = std::clamp(desiredSteps, minSpeedMultiplier, 3);
-
-		// If we had to force a minimum of 1, consume that fixed-step from the accumulator too.
-		if (framerateFactor > desiredSteps)
-		{
-			simulationAccumulatorUs -= static_cast<int64_t>(framerateFactor - desiredSteps) * gameplayFrameTimeUs;
-			if (simulationAccumulatorUs < 0)
-				simulationAccumulatorUs = 0;
-		}
-
-		*Variables.speedMultiplier = static_cast<uint32_t>(framerateFactor);
-	}
-	const int pacingFactor = isDemoMode ? std::max(framerateFactor, 2) : 1;
-	const int pacingFrameTimeUs = effectiveFrameTimeUs * pacingFactor;
-	const int pacingFrameBudgetUs = effectiveFrameBudgetUs * pacingFactor;
-
-	sleepTime = 0;
-	// Loop until next frame due
-	do {
-		sleepTime = (pacingFrameBudgetUs - (uint32_t)ElapsedMicroseconds.QuadPart) / 1000; // sleep slightly past target frame to limit frame drops
-		sleepTime = ((sleepTime / timerPeriod) * timerPeriod) - timerPeriod; // truncate to multiple of period
-		if (sleepTime > 0)
-			Sleep(sleepTime); // sleep to avoid wasted CPU
-		UpdateElapsedMicroseconds();
-	} while (ElapsedMicroseconds.QuadPart < pacingFrameTimeUs);
-
-	QueryPerformanceCounter(&PreviousTime);
-	timeEndPeriod(timerPeriod);
-	return (int)(PreviousTime.QuadPart / 1000);
+	const bool allowZeroStepSimulation = (state.mode == FrameTimerMode::CustomZeroStep) && zeroSpeedSafetyReady;
+	LogDiagnostic("ToyStory2Fix: FrameTimer %s mode=%s a1=%d\n",
+		GetCallsiteName(callsite), GetModeName(state.mode), a1);
+	return RunCustomFrameTimer(callsite, state, allowZeroStepSimulation);
 }
 
 int sub_49D910() {
@@ -409,6 +643,19 @@ DWORD WINAPI Init(LPVOID bDelay)
 		if (!QueryPerformanceFrequency(&Frequency) || Frequency.QuadPart == 0)
 			Frequency.QuadPart = 1;
 
+		framerateDiagnostics = iniReader.ReadBoolean(INI_KEY, "FramerateDiagnostics", false);
+		autoFallbackTo60 = iniReader.ReadBoolean(INI_KEY, "AutoFallbackTo60", true);
+		allowFrontendCustomTiming = iniReader.ReadBoolean(INI_KEY, "AllowFrontendCustomTiming", false);
+		allowFrontendZeroStep = iniReader.ReadBoolean(INI_KEY, "AllowFrontendZeroStep", false);
+		startupGuardMs = static_cast<uint32_t>(std::max(0, iniReader.ReadInteger(INI_KEY, "StartupGuardMs", 5000)));
+		if (!allowFrontendCustomTiming)
+			allowFrontendZeroStep = false;
+		framerateInitTickMs = GetTickCount64();
+
+		gameplayFrameTimerReturnAddress = 0;
+		frontendFrameTimerReturnAddress = 0;
+		menuFrameTimerReturnAddress = 0;
+
 		targetRefreshRateOverride = std::max(0, iniReader.ReadInteger(INI_KEY, "TargetRefreshRate", 0));
 		refreshRateProbePending = false;
 		if (iniReader.ReadBoolean(INI_KEY, "NativeRefreshRate", false))
@@ -423,46 +670,56 @@ DWORD WINAPI Init(LPVOID bDelay)
 			ApplyRefreshRate(60);
 		}
 
-			pattern = hook::pattern("8B 0D ? ? ? ? 2B F1 3B"); //4011DF
-			if (!pattern.count_hint(1).empty())
-				Variables.speedMultiplier = *reinterpret_cast<uint32_t**>(pattern.get_first(2));
+		pattern = hook::pattern("8B 0D ? ? ? ? 2B F1 3B"); //4011DF
+		if (!pattern.count_hint(1).empty())
+			Variables.speedMultiplier = *reinterpret_cast<uint32_t**>(pattern.get_first(2));
 
-			pattern = hook::pattern("39 3D ? ? ? ? 75 27"); //403C3A
-			if (!pattern.count_hint(1).empty())
-				Variables.isDemoMode = *reinterpret_cast<bool**>(pattern.get_first(2));
+		pattern = hook::pattern("39 3D ? ? ? ? 75 27"); //403C3A
+		if (!pattern.count_hint(1).empty())
+			Variables.isDemoMode = *reinterpret_cast<bool**>(pattern.get_first(2));
 
-			zeroSpeedSafetyReady = InstallZeroSpeedSafetyPatches();
-			simulationAccumulatorUs = 0;
-			if (!zeroSpeedSafetyReady)
-				OutputDebugStringA("ToyStory2Fix: High-refresh simulation safety patches unavailable. Falling back to legacy framerate behavior.");
+		zeroSpeedSafetyReady = InstallZeroSpeedSafetyPatches();
+		if (!zeroSpeedSafetyReady)
+			OutputDebugStringA("ToyStory2Fix: High-refresh simulation safety patches unavailable. Falling back to legacy framerate behavior.");
+		if (allowFrontendZeroStep && !zeroSpeedSafetyReady)
+		{
+			allowFrontendZeroStep = false;
+			LogMessage("ToyStory2Fix: AllowFrontendZeroStep disabled because safety patches were unavailable.\n");
+		}
 
-			pattern = hook::pattern("C7 05 ? ? ? ? 00 00 00 00 E8 ? ? ? ? E8 ? ? ? ? 33"); //49BBD8
+		pattern = hook::pattern("C7 05 ? ? ? ? 00 00 00 00 E8 ? ? ? ? E8 ? ? ? ? 33"); //49BBD8
+		if (!pattern.count_hint(1).empty())
+		{
+			auto* callInstruction = pattern.get_first<uint8_t>(10);
+			menuFrameTimerReturnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
+			sub_490860_addr = ResolveRelativeCall(callInstruction);
+			injector::MakeCALL(callInstruction, sub_490860);
+		}
+
+		if (sub_490860_addr != 0)
+		{
+			pattern = hook::pattern("83 C4 08 6A 01 E8 ? ? ? ?"); //441906
 			if (!pattern.count_hint(1).empty())
 			{
-				auto* callInstruction = pattern.get_first<uint8_t>(10);
-				menuFrameTimerReturnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
-				sub_490860_addr = ResolveRelativeCall(callInstruction);
+				auto* callInstruction = pattern.get_first<uint8_t>(5);
+				gameplayFrameTimerReturnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
 				injector::MakeCALL(callInstruction, sub_490860);
 			}
 
-			if (sub_490860_addr != 0)
+			pattern = hook::pattern("6A 00 E8 ? ? ? ? 6A 01 E8 ? ? ? ? 83"); //4419F4
+			if (!pattern.count_hint(1).empty())
 			{
-				pattern = hook::pattern("83 C4 08 6A 01 E8 ? ? ? ?"); //441906
-				if (!pattern.count_hint(1).empty())
-				{
-					auto* callInstruction = pattern.get_first<uint8_t>(5);
-					gameplayFrameTimerReturnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
-					injector::MakeCALL(callInstruction, sub_490860);
-				}
-
-				pattern = hook::pattern("6A 00 E8 ? ? ? ? 6A 01 E8 ? ? ? ? 83"); //4419F4
-				if (!pattern.count_hint(1).empty())
-				{
-					auto* callInstruction = pattern.get_first<uint8_t>(2);
-					frontendFrameTimerReturnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
-					injector::MakeCALL(callInstruction, sub_490860);
-				}
+				auto* callInstruction = pattern.get_first<uint8_t>(2);
+				frontendFrameTimerReturnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
+				injector::MakeCALL(callInstruction, sub_490860);
 			}
+
+			InitializeFrameTimerModes();
+		}
+		else
+		{
+			LogMessage("ToyStory2Fix: Could not resolve frame-timer target. Legacy game timing will be used.\n");
+		}
 	}
 
 
