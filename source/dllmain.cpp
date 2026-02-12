@@ -10,11 +10,23 @@ int sleepTime;
 int framerateFactor;
 int targetFrameTimeUs = 16667;
 int sleepFrameBudgetUs = 16949;
+bool useNativeRefreshRate = false;
+bool refreshRateProbePending = false;
+uint32_t targetRefreshRateOverride = 0;
 
 uintptr_t ResolveRelativeCall(uint8_t* callInstruction)
 {
 	int32_t relativeTarget = *reinterpret_cast<int32_t*>(callInstruction + 1);
 	return reinterpret_cast<uintptr_t>(callInstruction + 5 + relativeTarget);
+}
+
+void ApplyRefreshRate(uint32_t refreshRate)
+{
+	if (refreshRate < 30 || refreshRate > 1000)
+		refreshRate = 60;
+
+	targetFrameTimeUs = (1000000 + (refreshRate / 2)) / refreshRate;
+	sleepFrameBudgetUs = targetFrameTimeUs + std::max(1, targetFrameTimeUs / 60);
 }
 
 uint32_t GetDesktopRefreshRate()
@@ -30,6 +42,45 @@ uint32_t GetDesktopRefreshRate()
 	}
 
 	return 60;
+}
+
+BOOL CALLBACK FindProcessWindow(HWND hwnd, LPARAM lParam)
+{
+	DWORD processId = 0;
+	GetWindowThreadProcessId(hwnd, &processId);
+
+	if (processId == GetCurrentProcessId() && IsWindowVisible(hwnd) && GetWindow(hwnd, GW_OWNER) == nullptr)
+	{
+		*reinterpret_cast<HWND*>(lParam) = hwnd;
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+uint32_t GetProcessWindowRefreshRate()
+{
+	HWND processWindow = nullptr;
+	EnumWindows(FindProcessWindow, reinterpret_cast<LPARAM>(&processWindow));
+	if (processWindow == nullptr)
+		return 0;
+
+	HMONITOR monitor = MonitorFromWindow(processWindow, MONITOR_DEFAULTTONEAREST);
+	MONITORINFOEXA monitorInfo = {};
+	monitorInfo.cbSize = sizeof(monitorInfo);
+	if (!GetMonitorInfoA(monitor, &monitorInfo))
+		return 0;
+
+	DEVMODEA devMode = {};
+	devMode.dmSize = sizeof(devMode);
+	if (EnumDisplaySettingsA(monitorInfo.szDevice, ENUM_CURRENT_SETTINGS, &devMode) &&
+		devMode.dmDisplayFrequency > 1 &&
+		devMode.dmDisplayFrequency != 0xFFFFFFFFu)
+	{
+		return devMode.dmDisplayFrequency;
+	}
+
+	return 0;
 }
 
 struct Variables
@@ -60,6 +111,16 @@ int __cdecl sub_490860(int a1) {
 	auto _sub_490860 = (int(__cdecl*)(int))sub_490860_addr;
 	if (Variables.speedMultiplier == nullptr || Variables.isDemoMode == nullptr)
 		return _sub_490860 ? _sub_490860(a1) : 0;
+
+	if (refreshRateProbePending)
+	{
+		uint32_t processRefreshRate = GetProcessWindowRefreshRate();
+		if (processRefreshRate > 0)
+		{
+			ApplyRefreshRate(processRefreshRate);
+			refreshRateProbePending = false;
+		}
+	}
 
 	const UINT timerPeriod = tc.wPeriodMin ? tc.wPeriodMin : 1;
 	const int frameTimeUs = std::max(targetFrameTimeUs, 1);
@@ -185,16 +246,19 @@ DWORD WINAPI Init(LPVOID bDelay)
 		if (!QueryPerformanceFrequency(&Frequency) || Frequency.QuadPart == 0)
 			Frequency.QuadPart = 1;
 
-		if (iniReader.ReadBoolean(INI_KEY, "NativeRefreshRate", false))
+		useNativeRefreshRate = iniReader.ReadBoolean(INI_KEY, "NativeRefreshRate", false);
+		targetRefreshRateOverride = std::max(0, iniReader.ReadInteger(INI_KEY, "TargetRefreshRate", 0));
+		refreshRateProbePending = false;
+		if (useNativeRefreshRate)
 		{
-			uint32_t refreshRate = GetDesktopRefreshRate();
-			targetFrameTimeUs = (1000000 + (refreshRate / 2)) / refreshRate;
-			sleepFrameBudgetUs = targetFrameTimeUs + std::max(1, targetFrameTimeUs / 60);
+			uint32_t refreshRate = targetRefreshRateOverride > 0 ? targetRefreshRateOverride : GetDesktopRefreshRate();
+			ApplyRefreshRate(refreshRate);
+			// Retry once the game window exists to support multi-monitor setups where primary display differs.
+			refreshRateProbePending = (targetRefreshRateOverride == 0);
 		}
 		else
 		{
-			targetFrameTimeUs = 16667;
-			sleepFrameBudgetUs = 16949;
+			ApplyRefreshRate(60);
 		}
 
 		pattern = hook::pattern("8B 0D ? ? ? ? 2B F1 3B"); //4011DF
