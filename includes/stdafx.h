@@ -1,9 +1,13 @@
 #pragma once
 #include "targetver.h"
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #define WIN32_LEAN_AND_MEAN
 #pragma warning(disable: 4178 4305 4309 4510 4996)
 #include <windows.h>
 #include <stdint.h>
+#include <algorithm>
 #include <array>
 #include "IniReader.h"
 #include "injector\injector.hpp"

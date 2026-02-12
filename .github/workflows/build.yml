@@ -1,0 +1,47 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Print Tool Versions
+        shell: cmd
+        run: |
+          premake5.exe --version
+          msbuild -version
+
+      - name: Generate Visual Studio Solution
+        shell: cmd
+        run: premake5.exe vs2017
+
+      - name: Build Release Win32
+        shell: cmd
+        run: msbuild build\ToyStory2Fix.sln /m /p:Configuration=Release /p:Platform=Win32
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ToyStory2Fix-win32
+          if-no-files-found: error
+          path: |
+            data\scripts\ToyStory2Fix.asi
+            data\scripts\ToyStory2Fix.ini
+            data\dsound.dll
+            data\dsound.ini

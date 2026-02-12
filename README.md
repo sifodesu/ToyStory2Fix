@@ -13,3 +13,5 @@ Get the latest version [from the releases page](https://github.com/RibShark/ToyS
 
 # Configuration
 You can enable or disable any part of the patch by opening the `scripts\ToyStory2Fix.ini` file and setting the options to `true` or `false`.
+
+`FixFramerate` limits gameplay to 60 FPS by default. If `NativeRefreshRate` is enabled, the cap follows the primary monitor refresh rate. Demo mode remains capped at 30 FPS.
