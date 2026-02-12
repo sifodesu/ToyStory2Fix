@@ -701,18 +701,38 @@ int RunCustomFrameTimer(FrameTimerCallsite callsite, FrameTimerState& state, boo
 	const int pacingFactor = isDemoMode ? std::max(framerateFactor, 2) : 1;
 	const int pacingFrameTimeUs = effectiveFrameTimeUs * pacingFactor;
 	const int pacingFrameBudgetUs = effectiveFrameBudgetUs * pacingFactor;
+	const int64_t sleepMarginUs = std::max<int64_t>(2000, pacingFrameBudgetUs / 6);
+	const int64_t yieldMarginUs = std::max<int64_t>(1000, pacingFrameTimeUs / 8);
 
 	sleepTime = 0;
-	// Loop until next frame due
-	do {
-		sleepTime = static_cast<int>((pacingFrameBudgetUs - elapsedUs) / 1000); // sleep slightly past target frame to limit frame drops
-		sleepTime = ((sleepTime / static_cast<int>(timerPeriod)) * static_cast<int>(timerPeriod)) - static_cast<int>(timerPeriod);
-		if (sleepTime > 0)
-			Sleep(sleepTime); // sleep to avoid wasted CPU
+	for (;;)
+	{
 		elapsedUs = QueryElapsedMicroseconds(state.previousTime, currentTime);
 		if (elapsedUs < 0)
 			elapsedUs = 0;
-	} while (elapsedUs < pacingFrameTimeUs);
+
+		const int64_t remainingUs = static_cast<int64_t>(pacingFrameTimeUs) - elapsedUs;
+		if (remainingUs <= 0)
+			break;
+
+		if (remainingUs > sleepMarginUs)
+		{
+			// Keep a guard window before the frame deadline to avoid oversleep jitter.
+			const int64_t sleepCandidateUs = remainingUs - sleepMarginUs;
+			const int candidateMs = static_cast<int>(sleepCandidateUs / 1000);
+			if (candidateMs > 0)
+			{
+				sleepTime = candidateMs;
+				Sleep(sleepTime);
+				continue;
+			}
+		}
+
+		if (remainingUs > yieldMarginUs)
+			Sleep(0);
+		else
+			SwitchToThread();
+	}
 
 	state.previousTime = currentTime;
 	timeEndPeriod(timerPeriod);
