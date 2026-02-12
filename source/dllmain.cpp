@@ -564,7 +564,7 @@ bool InstallZeroSpeedSafetyPatches()
 	}
 
 	bool hasRenderMotionPatchE = false;
-	pattern = hook::pattern("8A C1 D1 E8 83 C0 05 83 C4 10 0F AF 05 ? ? ? ? 03 D0 83 FA 10");
+	pattern = hook::pattern("33 C0 8A C1 8B 54 24 ? D1 E8 83 C0 05 83 C4 10 0F AF 05 ? ? ? ? 03 D0 83 FA 10");
 	if (!pattern.count_hint(1).empty())
 	{
 		struct MulEaxBySafeSpeedHook
@@ -573,7 +573,7 @@ bool InstallZeroSpeedSafetyPatches()
 			{
 				regs.eax = MultiplyBySafeSpeed(regs.eax);
 			}
-		}; injector::MakeInline<MulEaxBySafeSpeedHook>(pattern.get_first(10), pattern.get_first(17));
+		}; injector::MakeInline<MulEaxBySafeSpeedHook>(pattern.get_first(16), pattern.get_first(23));
 		hasRenderMotionPatchE = true;
 	}
 
