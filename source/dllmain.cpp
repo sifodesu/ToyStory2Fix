@@ -17,7 +17,9 @@ int64_t simulationAccumulatorUs = 0;
 bool refreshRateProbePending = false;
 bool zeroSpeedSafetyReady = false;
 uint32_t targetRefreshRateOverride = 0;
-uintptr_t startupFrameTimerReturnAddress = 0;
+uintptr_t gameplayFrameTimerReturnAddress = 0;
+uintptr_t frontendFrameTimerReturnAddress = 0;
+uintptr_t menuFrameTimerReturnAddress = 0;
 
 uintptr_t ResolveRelativeCall(uint8_t* callInstruction)
 {
@@ -237,14 +239,13 @@ int __cdecl sub_490860(int a1) {
 	const bool isDemoMode = *Variables.isDemoMode;
 	constexpr int gameplayFrameTimeUs = 16667;
 	const uintptr_t returnAddress = reinterpret_cast<uintptr_t>(_ReturnAddress());
-	const bool isStartupFrameTimerCall =
-		(startupFrameTimerReturnAddress != 0) && (returnAddress == startupFrameTimerReturnAddress);
+	const bool isGameplayFrameTimerCall =
+		(gameplayFrameTimerReturnAddress != 0) && (returnAddress == gameplayFrameTimerReturnAddress);
 	const bool allowZeroStepSimulation =
 		zeroSpeedSafetyReady &&
 		!isDemoMode &&
-		!isStartupFrameTimerCall &&
-		frameTimeUs < gameplayFrameTimeUs &&
-		a1 == 0;
+		isGameplayFrameTimerCall &&
+		frameTimeUs < gameplayFrameTimeUs;
 	int effectiveFrameTimeUs = frameTimeUs;
 	int effectiveFrameBudgetUs = frameBudgetUs;
 	if (isDemoMode)
@@ -439,21 +440,29 @@ DWORD WINAPI Init(LPVOID bDelay)
 			if (!pattern.count_hint(1).empty())
 			{
 				auto* callInstruction = pattern.get_first<uint8_t>(10);
-				startupFrameTimerReturnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
+				menuFrameTimerReturnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
 				sub_490860_addr = ResolveRelativeCall(callInstruction);
 				injector::MakeCALL(callInstruction, sub_490860);
 			}
 
-		if (sub_490860_addr != 0)
-		{
-			pattern = hook::pattern("83 C4 08 6A 01 E8 ? ? ? ?"); //441906
-			if (!pattern.count_hint(1).empty())
-				injector::MakeCALL(pattern.get_first(5), sub_490860);
+			if (sub_490860_addr != 0)
+			{
+				pattern = hook::pattern("83 C4 08 6A 01 E8 ? ? ? ?"); //441906
+				if (!pattern.count_hint(1).empty())
+				{
+					auto* callInstruction = pattern.get_first<uint8_t>(5);
+					gameplayFrameTimerReturnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
+					injector::MakeCALL(callInstruction, sub_490860);
+				}
 
-			pattern = hook::pattern("6A 00 E8 ? ? ? ? 6A 01 E8 ? ? ? ? 83"); //4419F4
-			if (!pattern.count_hint(1).empty())
-				injector::MakeCALL(pattern.get_first(2), sub_490860);
-		}
+				pattern = hook::pattern("6A 00 E8 ? ? ? ? 6A 01 E8 ? ? ? ? 83"); //4419F4
+				if (!pattern.count_hint(1).empty())
+				{
+					auto* callInstruction = pattern.get_first<uint8_t>(2);
+					frontendFrameTimerReturnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
+					injector::MakeCALL(callInstruction, sub_490860);
+				}
+			}
 	}
 
 
