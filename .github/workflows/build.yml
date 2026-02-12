@@ -33,7 +33,7 @@ jobs:
 
       - name: Build Release Win32
         shell: cmd
-        run: msbuild build\ToyStory2Fix.sln /m /p:Configuration=Release /p:Platform=Win32
+        run: msbuild build\ToyStory2Fix.sln /m /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
