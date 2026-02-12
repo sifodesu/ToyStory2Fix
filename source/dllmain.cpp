@@ -4,6 +4,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <intrin.h>
+#include <vector>
 
 #pragma intrinsic(_ReturnAddress)
 
@@ -60,6 +61,67 @@ uintptr_t ResolveRelativeCall(uint8_t* callInstruction)
 {
 	int32_t relativeTarget = *reinterpret_cast<int32_t*>(callInstruction + 1);
 	return reinterpret_cast<uintptr_t>(callInstruction + 5 + relativeTarget);
+}
+
+std::vector<uint8_t*> FindDirectCallsToTarget(uintptr_t targetAddress)
+{
+	std::vector<uint8_t*> callInstructions;
+	uint8_t* moduleBase = reinterpret_cast<uint8_t*>(GetModuleHandle(nullptr));
+	if (moduleBase == nullptr)
+		return callInstructions;
+
+	auto* dosHeader = reinterpret_cast<IMAGE_DOS_HEADER*>(moduleBase);
+	if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE)
+		return callInstructions;
+
+	auto* ntHeaders = reinterpret_cast<IMAGE_NT_HEADERS*>(moduleBase + dosHeader->e_lfanew);
+	if (ntHeaders->Signature != IMAGE_NT_SIGNATURE)
+		return callInstructions;
+
+	IMAGE_SECTION_HEADER* section = IMAGE_FIRST_SECTION(ntHeaders);
+	for (uint16_t i = 0; i < ntHeaders->FileHeader.NumberOfSections; ++i, ++section)
+	{
+		if ((section->Characteristics & IMAGE_SCN_CNT_CODE) == 0)
+			continue;
+
+		const std::size_t sectionSize = static_cast<std::size_t>(section->Misc.VirtualSize);
+		if (sectionSize < 5)
+			continue;
+
+		uint8_t* sectionStart = moduleBase + section->VirtualAddress;
+		uint8_t* sectionEnd = sectionStart + sectionSize - 5;
+		for (uint8_t* cursor = sectionStart; cursor <= sectionEnd; ++cursor)
+		{
+			if (*cursor != 0xE8)
+				continue;
+
+			int32_t relativeTarget = *reinterpret_cast<int32_t*>(cursor + 1);
+			uintptr_t destination = reinterpret_cast<uintptr_t>(cursor + 5 + relativeTarget);
+			if (destination == targetAddress)
+				callInstructions.push_back(cursor);
+		}
+	}
+
+	return callInstructions;
+}
+
+int GetImmediatePushArgBeforeCall(uint8_t* callInstruction)
+{
+	if (callInstruction == nullptr)
+		return -1;
+
+	MEMORY_BASIC_INFORMATION mbi = {};
+	if (VirtualQuery(callInstruction, &mbi, sizeof(mbi)) == 0)
+		return -1;
+
+	auto* regionStart = reinterpret_cast<uint8_t*>(mbi.BaseAddress);
+	if (callInstruction < (regionStart + 2))
+		return -1;
+
+	if (callInstruction[-2] != 0x6A)
+		return -1;
+
+	return callInstruction[-1];
 }
 
 const char* GetCallsiteName(FrameTimerCallsite callsite)
@@ -698,21 +760,48 @@ DWORD WINAPI Init(LPVOID bDelay)
 
 		if (sub_490860_addr != 0)
 		{
-			pattern = hook::pattern("83 C4 08 6A 01 E8 ? ? ? ?"); //441906
-			if (!pattern.count_hint(1).empty())
+			auto timerCallsites = FindDirectCallsToTarget(sub_490860_addr);
+			for (auto* callInstruction : timerCallsites)
 			{
-				auto* callInstruction = pattern.get_first<uint8_t>(5);
-				gameplayFrameTimerReturnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
+				const uintptr_t returnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
+				if (returnAddress == menuFrameTimerReturnAddress)
+					continue;
+
+				const int pushedArg = GetImmediatePushArgBeforeCall(callInstruction);
+				if (pushedArg == 1 && gameplayFrameTimerReturnAddress == 0)
+					gameplayFrameTimerReturnAddress = returnAddress;
+				else if (pushedArg == 0 && frontendFrameTimerReturnAddress == 0)
+					frontendFrameTimerReturnAddress = returnAddress;
+
 				injector::MakeCALL(callInstruction, sub_490860);
 			}
 
-			pattern = hook::pattern("6A 00 E8 ? ? ? ? 6A 01 E8 ? ? ? ? 83"); //4419F4
-			if (!pattern.count_hint(1).empty())
+			if (gameplayFrameTimerReturnAddress == 0)
 			{
-				auto* callInstruction = pattern.get_first<uint8_t>(2);
-				frontendFrameTimerReturnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
-				injector::MakeCALL(callInstruction, sub_490860);
+				pattern = hook::pattern("83 C4 08 6A 01 E8 ? ? ? ?");
+				if (!pattern.count_hint(1).empty())
+				{
+					auto* callInstruction = pattern.get_first<uint8_t>(5);
+					gameplayFrameTimerReturnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
+					injector::MakeCALL(callInstruction, sub_490860);
+				}
 			}
+
+			if (frontendFrameTimerReturnAddress == 0)
+			{
+				pattern = hook::pattern("E8 ? ? ? ? 6A 00 E8 ? ? ? ? 6A 01 E8 ? ? ? ? 83 C4");
+				if (!pattern.count_hint(1).empty())
+				{
+					auto* callInstruction = pattern.get_first<uint8_t>(7);
+					frontendFrameTimerReturnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
+					injector::MakeCALL(callInstruction, sub_490860);
+				}
+			}
+
+			LogMessage("ToyStory2Fix: FrameTimer callsites gameplay=%p frontend=%p menu=%p\n",
+				reinterpret_cast<void*>(gameplayFrameTimerReturnAddress),
+				reinterpret_cast<void*>(frontendFrameTimerReturnAddress),
+				reinterpret_cast<void*>(menuFrameTimerReturnAddress));
 
 			InitializeFrameTimerModes();
 		}
