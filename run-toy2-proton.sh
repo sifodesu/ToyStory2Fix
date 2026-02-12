@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GAME_EXE_SRC="$ROOT_DIR/Setup/Toy2/Hd/toy2.exe"
 GAME_DATA_SRC="$ROOT_DIR/Setup/Toy2/Hd/data"
 GAME_SCRIPTS_SRC="$ROOT_DIR/Setup/Toy2/Hd/scripts"
+GAME_DDRAW_SRC="$ROOT_DIR/Setup/Toy2/Hd/ddraw.dll"
 GAME_DSOUND_SRC="$ROOT_DIR/Setup/Toy2/Hd/dsound.dll"
 GAME_DSOUND_INI_SRC="$ROOT_DIR/Setup/Toy2/Hd/dsound.ini"
 GAME_CD_VALIDATE="$ROOT_DIR/Setup/Toy2/Cd/validate.tta"
@@ -90,6 +91,11 @@ fi
 
 mkdir -p "$INSTALL_DIR/scripts"
 cp -af "$GAME_SCRIPTS_SRC"/. "$INSTALL_DIR/scripts"/
+
+# If the TS2Fix modern depth wrapper is present, keep it beside the EXE so it can be loaded.
+if [[ -f "$GAME_DDRAW_SRC" ]]; then
+  cp -a "$GAME_DDRAW_SRC" "$INSTALL_DIR/ddraw.dll"
+fi
 
 # Keep game-specific DirectSound shim files beside the EXE.
 if [[ -f "$GAME_DSOUND_SRC" ]]; then
