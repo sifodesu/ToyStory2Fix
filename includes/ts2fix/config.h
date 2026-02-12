@@ -18,6 +18,7 @@ struct FramerateConfig
 
 struct RenderingConfig
 {
+	bool modernDepthPipeline = true;
 	bool widescreen = true;
 	bool zBufferFix = true;
 	float zBufferNearPlane = 100.0f;

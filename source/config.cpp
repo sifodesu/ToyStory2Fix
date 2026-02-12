@@ -82,6 +82,8 @@ Config LoadConfig(CIniReader& iniReader)
 	config.framerate.frontendZeroStep = ReadBooleanWithAlias(
 		iniReader, "Framerate", "frontend_zero_step", false, "AllowFrontendZeroStep");
 
+	config.rendering.modernDepthPipeline = ReadBooleanWithAlias(
+		iniReader, "Rendering", "modern_depth_pipeline", true, "ModernDepthPipeline");
 	config.rendering.widescreen = ReadBooleanWithAlias(iniReader, "Rendering", "widescreen", true, "Widescreen");
 	config.rendering.zBufferFix = ReadBooleanWithAlias(iniReader, "Rendering", "zbuffer_fix", true, "FixZBuffer");
 	config.rendering.zBufferNearPlane = std::max(
