@@ -15,7 +15,8 @@ workspace "ToyStory2Fix"
       includedirs { "external/hooking" }
       includedirs { "external/injector/include" }
       includedirs { "external/inireader" }
-      links { "winmm" }
+      -- dxguid provides DirectX IID/CLSID definitions without importing ddraw.dll.
+      links { "winmm", "dxguid" }
    end
 
    function applyversiondefines()
