@@ -10,7 +10,9 @@ int sleepTime;
 int framerateFactor;
 int targetFrameTimeUs = 16667;
 int sleepFrameBudgetUs = 16949;
+int64_t simulationAccumulatorUs = 0;
 bool refreshRateProbePending = false;
+bool zeroSpeedSafetyReady = false;
 uint32_t targetRefreshRateOverride = 0;
 
 uintptr_t ResolveRelativeCall(uint8_t* callInstruction)
@@ -26,6 +28,7 @@ void ApplyRefreshRate(uint32_t refreshRate)
 
 	targetFrameTimeUs = (1000000 + (refreshRate / 2)) / refreshRate;
 	sleepFrameBudgetUs = targetFrameTimeUs + std::max(1, targetFrameTimeUs / 60);
+	simulationAccumulatorUs = 0;
 }
 
 uint32_t GetDesktopRefreshRate()
@@ -93,6 +96,109 @@ struct Variables
 	bool* isDemoMode;
 } Variables;
 
+int GetSafeSpeedMultiplierValue()
+{
+	if (Variables.speedMultiplier == nullptr)
+		return 1;
+	return std::max(static_cast<int>(*Variables.speedMultiplier), 1);
+}
+
+uint32_t MultiplyBySafeSpeed(uint32_t value)
+{
+	return static_cast<uint32_t>(static_cast<int64_t>(static_cast<int32_t>(value)) * GetSafeSpeedMultiplierValue());
+}
+
+void DivideEaxEdxBySafeSpeed(injector::reg_pack& regs)
+{
+	const int64_t dividend =
+		(static_cast<int64_t>(static_cast<int32_t>(regs.edx)) << 32) |
+		static_cast<uint32_t>(regs.eax);
+	const int32_t divisor = GetSafeSpeedMultiplierValue();
+	const int32_t quotient = static_cast<int32_t>(dividend / divisor);
+	const int32_t remainder = static_cast<int32_t>(dividend % divisor);
+
+	regs.eax = static_cast<uint32_t>(quotient);
+	regs.edx = static_cast<uint32_t>(remainder);
+}
+
+bool InstallZeroSpeedSafetyPatches()
+{
+	static bool installed = false;
+	static bool ready = false;
+	if (installed)
+		return ready;
+	installed = true;
+
+	// The game has a few hard idiv sites on speedMultiplier.
+	// These hooks keep >60Hz simulation skipping (speedMultiplier = 0) from faulting.
+	bool hasMulPatch = false;
+	bool hasDivPatch = false;
+	bool hasMenuDivPatch = false;
+
+	auto pattern = hook::pattern("8B 46 68 8B 56 70 0F AF 05 ? ? ? ? 89 46 68 8B 0D ? ? ? ? 0F AF 4E 6C 89 4E 6C 0F AF 15 ? ? ? ?");
+	if (!pattern.count_hint(1).empty())
+	{
+		struct MulEaxBySafeSpeedHook
+		{
+			void operator()(injector::reg_pack& regs)
+			{
+				regs.eax = MultiplyBySafeSpeed(regs.eax);
+			}
+		}; injector::MakeInline<MulEaxBySafeSpeedHook>(pattern.get_first(6), pattern.get_first(13));
+
+		struct LoadSafeSpeedToEcxHook
+		{
+			void operator()(injector::reg_pack& regs)
+			{
+				regs.ecx = static_cast<uint32_t>(GetSafeSpeedMultiplierValue());
+			}
+		}; injector::MakeInline<LoadSafeSpeedToEcxHook>(pattern.get_first(16), pattern.get_first(22));
+
+		struct MulEdxBySafeSpeedHook
+		{
+			void operator()(injector::reg_pack& regs)
+			{
+				regs.edx = MultiplyBySafeSpeed(regs.edx);
+			}
+		}; injector::MakeInline<MulEdxBySafeSpeedHook>(pattern.get_first(29), pattern.get_first(36));
+
+		hasMulPatch = true;
+	}
+
+	pattern = hook::pattern("8B 46 68 83 C4 08 99 F7 3D ? ? ? ? 89 46 68 8B 46 6C 99 F7 3D ? ? ? ? 89 46 6C 8B 46 70 99 F7 3D ? ? ? ?");
+	if (!pattern.count_hint(1).empty())
+	{
+		struct DivBySafeSpeedHook
+		{
+			void operator()(injector::reg_pack& regs)
+			{
+				DivideEaxEdxBySafeSpeed(regs);
+			}
+		};
+
+		injector::MakeInline<DivBySafeSpeedHook>(pattern.get_first(7), pattern.get_first(13));
+		injector::MakeInline<DivBySafeSpeedHook>(pattern.get_first(20), pattern.get_first(26));
+		injector::MakeInline<DivBySafeSpeedHook>(pattern.get_first(33), pattern.get_first(39));
+		hasDivPatch = true;
+	}
+
+	pattern = hook::pattern("B8 1E 00 00 00 53 99 F7 3D ? ? ? ? 56 57");
+	if (!pattern.count_hint(1).empty())
+	{
+		struct DivBySafeSpeedHook
+		{
+			void operator()(injector::reg_pack& regs)
+			{
+				DivideEaxEdxBySafeSpeed(regs);
+			}
+		}; injector::MakeInline<DivBySafeSpeedHook>(pattern.get_first(7), pattern.get_first(13));
+		hasMenuDivPatch = true;
+	}
+
+	ready = hasMulPatch && hasDivPatch && hasMenuDivPatch;
+	return ready;
+}
+
 void UpdateElapsedMicroseconds() {
 	if (Frequency.QuadPart == 0)
 	{
@@ -126,9 +232,20 @@ int __cdecl sub_490860(int a1) {
 	const int frameBudgetUs = std::max(sleepFrameBudgetUs, frameTimeUs);
 	const bool isDemoMode = *Variables.isDemoMode;
 	constexpr int gameplayFrameTimeUs = 16667;
-	// Keep demo mode pacing tied to the original 60->30 behavior.
-	const int effectiveFrameTimeUs = isDemoMode ? 16667 : frameTimeUs;
-	const int effectiveFrameBudgetUs = isDemoMode ? 16949 : frameBudgetUs;
+	int effectiveFrameTimeUs = frameTimeUs;
+	int effectiveFrameBudgetUs = frameBudgetUs;
+	if (isDemoMode)
+	{
+		// Keep demo mode pacing tied to the original 60->30 behavior.
+		effectiveFrameTimeUs = 16667;
+		effectiveFrameBudgetUs = 16949;
+	}
+	else if (!zeroSpeedSafetyReady && frameTimeUs < gameplayFrameTimeUs)
+	{
+		// If zero-speed safety hooks are unavailable, keep simulation safe by falling back to 60 Hz pacing.
+		effectiveFrameTimeUs = gameplayFrameTimeUs;
+		effectiveFrameBudgetUs = gameplayFrameTimeUs + std::max(1, gameplayFrameTimeUs / 60);
+	}
 	timeBeginPeriod(timerPeriod);
 
 	if (PreviousTime.QuadPart == 0)
@@ -136,24 +253,54 @@ int __cdecl sub_490860(int a1) {
 
 	UpdateElapsedMicroseconds();
 
-	// Keep simulation multiplier anchored to the original 60 Hz update timing.
-	// Native refresh only controls frame pacing, not gameplay speed scaling.
-	framerateFactor = ((int)ElapsedMicroseconds.QuadPart / gameplayFrameTimeUs) + 1;
-	// Demo mode needs 30fps maximum
-	if (isDemoMode && framerateFactor < 2)
-		framerateFactor = 2;
-		
-	*Variables.speedMultiplier = std::clamp(framerateFactor, 1, 3);
+	if (isDemoMode)
+	{
+		simulationAccumulatorUs = 0;
+		framerateFactor = ((int)ElapsedMicroseconds.QuadPart / gameplayFrameTimeUs) + 1;
+		// Demo mode needs 30fps maximum.
+		if (framerateFactor < 2)
+			framerateFactor = 2;
+		*Variables.speedMultiplier = std::clamp(framerateFactor, 1, 3);
+	}
+	else
+	{
+		// Keep non-demo simulation updates anchored to the original 60 Hz timing.
+		// At >60 Hz, this naturally yields 0-step render frames.
+		simulationAccumulatorUs += ElapsedMicroseconds.QuadPart;
+		const int64_t maxAccumulatorUs = static_cast<int64_t>(gameplayFrameTimeUs) * 16;
+		if (simulationAccumulatorUs > maxAccumulatorUs)
+			simulationAccumulatorUs = maxAccumulatorUs;
+
+		const int desiredSteps = std::clamp(static_cast<int>(simulationAccumulatorUs / gameplayFrameTimeUs), 0, 3);
+		if (desiredSteps > 0)
+			simulationAccumulatorUs -= static_cast<int64_t>(desiredSteps) * gameplayFrameTimeUs;
+
+		const int minSpeedMultiplier = zeroSpeedSafetyReady ? 0 : 1;
+		framerateFactor = std::clamp(desiredSteps, minSpeedMultiplier, 3);
+
+		// If we had to force a minimum of 1, consume that fixed-step from the accumulator too.
+		if (framerateFactor > desiredSteps)
+		{
+			simulationAccumulatorUs -= static_cast<int64_t>(framerateFactor - desiredSteps) * gameplayFrameTimeUs;
+			if (simulationAccumulatorUs < 0)
+				simulationAccumulatorUs = 0;
+		}
+
+		*Variables.speedMultiplier = static_cast<uint32_t>(framerateFactor);
+	}
+	const int pacingFactor = isDemoMode ? std::max(framerateFactor, 2) : 1;
+	const int pacingFrameTimeUs = effectiveFrameTimeUs * pacingFactor;
+	const int pacingFrameBudgetUs = effectiveFrameBudgetUs * pacingFactor;
 
 	sleepTime = 0;
 	// Loop until next frame due
 	do {
-		sleepTime = (effectiveFrameBudgetUs * framerateFactor - (uint32_t)ElapsedMicroseconds.QuadPart) / 1000; // sleep slightly past target frame to limit frame drops
+		sleepTime = (pacingFrameBudgetUs - (uint32_t)ElapsedMicroseconds.QuadPart) / 1000; // sleep slightly past target frame to limit frame drops
 		sleepTime = ((sleepTime / timerPeriod) * timerPeriod) - timerPeriod; // truncate to multiple of period
 		if (sleepTime > 0)
 			Sleep(sleepTime); // sleep to avoid wasted CPU
 		UpdateElapsedMicroseconds();
-	} while (ElapsedMicroseconds.QuadPart < effectiveFrameTimeUs * framerateFactor);
+	} while (ElapsedMicroseconds.QuadPart < pacingFrameTimeUs);
 
 	QueryPerformanceCounter(&PreviousTime);
 	timeEndPeriod(timerPeriod);
@@ -262,13 +409,18 @@ DWORD WINAPI Init(LPVOID bDelay)
 			ApplyRefreshRate(60);
 		}
 
-		pattern = hook::pattern("8B 0D ? ? ? ? 2B F1 3B"); //4011DF
-		if (!pattern.count_hint(1).empty())
-			Variables.speedMultiplier = *reinterpret_cast<uint32_t**>(pattern.get_first(2));
+			pattern = hook::pattern("8B 0D ? ? ? ? 2B F1 3B"); //4011DF
+			if (!pattern.count_hint(1).empty())
+				Variables.speedMultiplier = *reinterpret_cast<uint32_t**>(pattern.get_first(2));
 
-		pattern = hook::pattern("39 3D ? ? ? ? 75 27"); //403C3A
-		if (!pattern.count_hint(1).empty())
-			Variables.isDemoMode = *reinterpret_cast<bool**>(pattern.get_first(2));
+			pattern = hook::pattern("39 3D ? ? ? ? 75 27"); //403C3A
+			if (!pattern.count_hint(1).empty())
+				Variables.isDemoMode = *reinterpret_cast<bool**>(pattern.get_first(2));
+
+			zeroSpeedSafetyReady = InstallZeroSpeedSafetyPatches();
+			simulationAccumulatorUs = 0;
+			if (!zeroSpeedSafetyReady)
+				OutputDebugStringA("ToyStory2Fix: High-refresh simulation safety patches unavailable. Falling back to legacy framerate behavior.");
 
 		pattern = hook::pattern("C7 05 ? ? ? ? 00 00 00 00 E8 ? ? ? ? E8 ? ? ? ? 33"); //49BBD8
 		if (!pattern.count_hint(1).empty())
