@@ -426,6 +426,7 @@ bool InstallZeroSpeedSafetyPatches()
 	bool hasDivPatch = false;
 	bool hasMenuDivPatch = false;
 	bool hasRenderDeltaPatch = false;
+	bool hasRenderMotionPatch = false;
 
 	auto pattern = hook::pattern("8B 46 68 8B 56 70 0F AF 05 ? ? ? ? 89 46 68 8B 0D ? ? ? ? 0F AF 4E 6C 89 4E 6C 0F AF 15 ? ? ? ?");
 	if (!pattern.count_hint(1).empty())
@@ -502,6 +503,116 @@ bool InstallZeroSpeedSafetyPatches()
 		hasRenderDeltaPatch = true;
 	}
 
+	// Additional render/camera smoothing code paths that should never fully stall.
+	// These are updated every frame and become visually unstable when speedMultiplier is 0.
+	bool hasRenderMotionPatchA = false;
+	pattern = hook::pattern("8B C1 2B C2 0F AF 05 ? ? ? ? 99 83 E2 0F 03 C2 C1 F8 04 2B C8 89 4F 04 8B 4F 08 8B 15 ? ? ? ? 8B C1 2B C2 0F AF 05 ? ? ? ? 99 83 E2 0F");
+	if (!pattern.count_hint(1).empty())
+	{
+		struct MulEaxBySafeSpeedHook
+		{
+			void operator()(injector::reg_pack& regs)
+			{
+				regs.eax = MultiplyBySafeSpeed(regs.eax);
+			}
+		};
+		injector::MakeInline<MulEaxBySafeSpeedHook>(pattern.get_first(4), pattern.get_first(11));
+		injector::MakeInline<MulEaxBySafeSpeedHook>(pattern.get_first(38), pattern.get_first(45));
+		hasRenderMotionPatchA = true;
+	}
+
+	bool hasRenderMotionPatchB = false;
+	pattern = hook::pattern("8B 46 6C 0F AF 05 ? ? ? ? 99 83 E2 0F 03 C2 C1 F8 04 66 01 46 0E");
+	if (!pattern.count_hint(1).empty())
+	{
+		struct MulEaxBySafeSpeedHook
+		{
+			void operator()(injector::reg_pack& regs)
+			{
+				regs.eax = MultiplyBySafeSpeed(regs.eax);
+			}
+		}; injector::MakeInline<MulEaxBySafeSpeedHook>(pattern.get_first(3), pattern.get_first(10));
+		hasRenderMotionPatchB = true;
+	}
+
+	bool hasRenderMotionPatchC = false;
+	pattern = hook::pattern("C1 F8 03 0F AF 05 ? ? ? ? 99 2B C2 8B D0 66 8B 45 0E D1 FA 66 2B C2");
+	if (!pattern.count_hint(1).empty())
+	{
+		struct MulEaxBySafeSpeedHook
+		{
+			void operator()(injector::reg_pack& regs)
+			{
+				regs.eax = MultiplyBySafeSpeed(regs.eax);
+			}
+		}; injector::MakeInline<MulEaxBySafeSpeedHook>(pattern.get_first(3), pattern.get_first(10));
+		hasRenderMotionPatchC = true;
+	}
+
+	bool hasRenderMotionPatchD = false;
+	pattern = hook::pattern("8B D1 0F AF 15 ? ? ? ? 03 C2 8B 15 ? ? ? ? 3B C2");
+	if (!pattern.count_hint(1).empty())
+	{
+		struct MulEdxBySafeSpeedHook
+		{
+			void operator()(injector::reg_pack& regs)
+			{
+				regs.edx = MultiplyBySafeSpeed(regs.edx);
+			}
+		}; injector::MakeInline<MulEdxBySafeSpeedHook>(pattern.get_first(2), pattern.get_first(9));
+		hasRenderMotionPatchD = true;
+	}
+
+	bool hasRenderMotionPatchE = false;
+	pattern = hook::pattern("8A C1 D1 E8 83 C0 05 83 C4 10 0F AF 05 ? ? ? ? 03 D0 83 FA 10");
+	if (!pattern.count_hint(1).empty())
+	{
+		struct MulEaxBySafeSpeedHook
+		{
+			void operator()(injector::reg_pack& regs)
+			{
+				regs.eax = MultiplyBySafeSpeed(regs.eax);
+			}
+		}; injector::MakeInline<MulEaxBySafeSpeedHook>(pattern.get_first(10), pattern.get_first(17));
+		hasRenderMotionPatchE = true;
+	}
+
+	bool hasRenderMotionPatchF = false;
+	pattern = hook::pattern("33 C0 56 A0 ? ? ? ? 57 0F AF 05 ? ? ? ? 99 2B C2 33 FF 8B F0 D1 FE");
+	if (!pattern.count_hint(1).empty())
+	{
+		struct MulEaxBySafeSpeedHook
+		{
+			void operator()(injector::reg_pack& regs)
+			{
+				regs.eax = MultiplyBySafeSpeed(regs.eax);
+			}
+		}; injector::MakeInline<MulEaxBySafeSpeedHook>(pattern.get_first(9), pattern.get_first(16));
+		hasRenderMotionPatchF = true;
+	}
+
+	bool hasRenderMotionPatchG = false;
+	pattern = hook::pattern("A1 ? ? ? ? 66 8B 15 ? ? ? ? C1 F8 04 0F AF 05 ? ? ? ? 8B 0D ? ? ? ? 83 C4 28");
+	if (!pattern.count_hint(1).empty())
+	{
+		struct MulEaxBySafeSpeedHook
+		{
+			void operator()(injector::reg_pack& regs)
+			{
+				regs.eax = MultiplyBySafeSpeed(regs.eax);
+			}
+		}; injector::MakeInline<MulEaxBySafeSpeedHook>(pattern.get_first(15), pattern.get_first(22));
+		hasRenderMotionPatchG = true;
+	}
+
+	hasRenderMotionPatch = hasRenderMotionPatchA &&
+		hasRenderMotionPatchB &&
+		hasRenderMotionPatchC &&
+		hasRenderMotionPatchD &&
+		hasRenderMotionPatchE &&
+		hasRenderMotionPatchF &&
+		hasRenderMotionPatchG;
+
 	if (!hasMulPatch)
 		LogMessage("ToyStory2Fix: Zero-step safety missing multiply patch.\n");
 	if (!hasDivPatch)
@@ -510,8 +621,10 @@ bool InstallZeroSpeedSafetyPatches()
 		LogMessage("ToyStory2Fix: Zero-step safety missing menu divide patch.\n");
 	if (!hasRenderDeltaPatch)
 		LogMessage("ToyStory2Fix: Zero-step safety missing render delta patch.\n");
+	if (!hasRenderMotionPatch)
+		LogMessage("ToyStory2Fix: Zero-step safety missing render motion patch set.\n");
 
-	ready = hasMulPatch && hasDivPatch && hasMenuDivPatch && hasRenderDeltaPatch;
+	ready = hasMulPatch && hasDivPatch && hasMenuDivPatch && hasRenderDeltaPatch && hasRenderMotionPatch;
 	return ready;
 }
 
@@ -603,7 +716,8 @@ int RunCustomFrameTimer(FrameTimerCallsite callsite, FrameTimerState& state, boo
 
 	state.previousTime = currentTime;
 	timeEndPeriod(timerPeriod);
-	return static_cast<int>(state.previousTime.QuadPart / 1000);
+	// Match the original function contract: return millisecond clock value.
+	return static_cast<int>(timeGetTime());
 }
 
 int __cdecl sub_490860(int a1)
