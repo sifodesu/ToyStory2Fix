@@ -20,6 +20,8 @@ struct RenderingConfig
 {
 	bool widescreen = true;
 	bool zBufferFix = true;
+	float zBufferNearPlane = 100.0f;
+	float zBufferFarPlane = 20000.0f;
 	bool increaseRenderDistance = true;
 	float renderDistanceScale = 1.5f;
 	float renderDistanceMax = 18000.0f;

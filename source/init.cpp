@@ -190,7 +190,7 @@ DWORD WINAPI Init(LPVOID delayed)
 	InstallFrameTimerHooks(config);
 	ApplyMiscPatches(config);
 	if (config.rendering.zBufferFix)
-		InstallZBufferFixHook();
+		InstallZBufferFixHook(config.rendering);
 
 	if (config.rendering.widescreen)
 		InstallWidescreenHook();

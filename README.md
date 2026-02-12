@@ -5,7 +5,7 @@ Toy Story 2 Fix is a program that fixes and enhances Toy Story 2 for the PC. Fea
 * Fixes the framerate issues that can occur on modern PCs.
 * Allows the player to immediately skip the ESRB and Copyright screens.
 * Allows the game to be played in widescreen with no 3D stretching.
-* Reduces z-buffer fighting by enforcing stable depth-state setup.
+* Reduces z-buffer fighting by improving depth precision and depth-state setup.
 * Increases the render distance of levels.
 * Works on every regional release of the game.
 
@@ -17,7 +17,7 @@ Configure options in `scripts\ToyStory2Fix.ini`.
 
 The INI now uses grouped sections:
 * `[Framerate]` for timing/refresh behavior (`enabled`, `native_refresh`, `target_refresh_rate`, `auto_fallback_60`, `startup_guard_ms`, diagnostics/frontend options).
-* `[Rendering]` for widescreen/depth/render-distance behavior (`widescreen`, `zbuffer_fix`, `increase_render_distance`, `render_distance_scale`, `render_distance_max`).
+* `[Rendering]` for widescreen/depth/render-distance behavior (`widescreen`, `zbuffer_fix`, `zbuffer_near_plane`, `zbuffer_far_plane`, `increase_render_distance`, `render_distance_scale`, `render_distance_max`).
 * `[Compatibility]` for device/splash compatibility patches (`allow_32bit`, `ignore_vram`, `skip_splash`).
 
 Framerate defaults keep gameplay simulation at 60 Hz while allowing higher render cadence on supported executables. Demo mode remains capped at 30 FPS.

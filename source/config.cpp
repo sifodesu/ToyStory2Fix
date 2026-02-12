@@ -84,6 +84,11 @@ Config LoadConfig(CIniReader& iniReader)
 
 	config.rendering.widescreen = ReadBooleanWithAlias(iniReader, "Rendering", "widescreen", true, "Widescreen");
 	config.rendering.zBufferFix = ReadBooleanWithAlias(iniReader, "Rendering", "zbuffer_fix", true, "FixZBuffer");
+	config.rendering.zBufferNearPlane = std::max(
+		1.0f, ReadFloatWithAlias(iniReader, "Rendering", "zbuffer_near_plane", 100.0f, "ZBufferNearPlane"));
+	config.rendering.zBufferFarPlane = std::max(
+		config.rendering.zBufferNearPlane + 1.0f,
+		ReadFloatWithAlias(iniReader, "Rendering", "zbuffer_far_plane", 20000.0f, "ZBufferFarPlane"));
 	config.rendering.increaseRenderDistance = ReadBooleanWithAlias(
 		iniReader, "Rendering", "increase_render_distance", true, "IncreaseRenderDistance");
 	config.rendering.renderDistanceScale = std::max(
