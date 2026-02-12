@@ -542,14 +542,14 @@ int __cdecl sub_490860(int a1)
 
 	auto& state = GetFrameTimerState(callsite);
 
-	// During early startup, keep non-gameplay paths on the original game timer.
-	if (IsStartupGuardActive() && callsite != FrameTimerCallsite::Gameplay)
+	// During early startup, keep all paths on the original game timer.
+	if (IsStartupGuardActive())
 		return _sub_490860 ? _sub_490860(a1) : 0;
 
 	if (state.mode == FrameTimerMode::LegacyPassthrough)
 		return _sub_490860 ? _sub_490860(a1) : 0;
 
-	const bool allowZeroStepSimulation = (state.mode == FrameTimerMode::CustomZeroStep) && zeroSpeedSafetyReady;
+	const bool allowZeroStepSimulation = (state.mode == FrameTimerMode::CustomZeroStep) && zeroSpeedSafetyReady && (a1 == 0);
 	LogDiagnostic("ToyStory2Fix: FrameTimer %s mode=%s a1=%d\n",
 		GetCallsiteName(callsite), GetModeName(state.mode), a1);
 	return RunCustomFrameTimer(callsite, state, allowZeroStepSimulation);
@@ -702,7 +702,7 @@ DWORD WINAPI Init(LPVOID bDelay)
 			if (!pattern.count_hint(1).empty())
 			{
 				auto* callInstruction = pattern.get_first<uint8_t>(5);
-				gameplayFrameTimerReturnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
+				frontendFrameTimerReturnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
 				injector::MakeCALL(callInstruction, sub_490860);
 			}
 
@@ -710,7 +710,7 @@ DWORD WINAPI Init(LPVOID bDelay)
 			if (!pattern.count_hint(1).empty())
 			{
 				auto* callInstruction = pattern.get_first<uint8_t>(2);
-				frontendFrameTimerReturnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
+				gameplayFrameTimerReturnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
 				injector::MakeCALL(callInstruction, sub_490860);
 			}
 
