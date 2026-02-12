@@ -232,6 +232,7 @@ int __cdecl sub_490860(int a1) {
 	const int frameBudgetUs = std::max(sleepFrameBudgetUs, frameTimeUs);
 	const bool isDemoMode = *Variables.isDemoMode;
 	constexpr int gameplayFrameTimeUs = 16667;
+	const bool allowZeroStepSimulation = zeroSpeedSafetyReady && !isDemoMode && frameTimeUs < gameplayFrameTimeUs && a1 != 0;
 	int effectiveFrameTimeUs = frameTimeUs;
 	int effectiveFrameBudgetUs = frameBudgetUs;
 	if (isDemoMode)
@@ -240,9 +241,9 @@ int __cdecl sub_490860(int a1) {
 		effectiveFrameTimeUs = 16667;
 		effectiveFrameBudgetUs = 16949;
 	}
-	else if (!zeroSpeedSafetyReady && frameTimeUs < gameplayFrameTimeUs)
+	else if (!allowZeroStepSimulation && frameTimeUs < gameplayFrameTimeUs)
 	{
-		// If zero-speed safety hooks are unavailable, keep simulation safe by falling back to 60 Hz pacing.
+		// If zero-step simulation is unavailable (or this call-site should not use it), keep simulation safe at 60 Hz.
 		effectiveFrameTimeUs = gameplayFrameTimeUs;
 		effectiveFrameBudgetUs = gameplayFrameTimeUs + std::max(1, gameplayFrameTimeUs / 60);
 	}
@@ -275,7 +276,7 @@ int __cdecl sub_490860(int a1) {
 		if (desiredSteps > 0)
 			simulationAccumulatorUs -= static_cast<int64_t>(desiredSteps) * gameplayFrameTimeUs;
 
-		const int minSpeedMultiplier = zeroSpeedSafetyReady ? 0 : 1;
+		const int minSpeedMultiplier = allowZeroStepSimulation ? 0 : 1;
 		framerateFactor = std::clamp(desiredSteps, minSpeedMultiplier, 3);
 
 		// If we had to force a minimum of 1, consume that fixed-step from the accumulator too.
