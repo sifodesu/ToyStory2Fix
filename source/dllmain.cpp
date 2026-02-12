@@ -1,5 +1,8 @@
 #include "stdafx.h"
 #include <MMSystem.h>
+#include <intrin.h>
+
+#pragma intrinsic(_ReturnAddress)
 
 uintptr_t sub_490860_addr;
 uintptr_t sub_49D910_addr;
@@ -14,6 +17,7 @@ int64_t simulationAccumulatorUs = 0;
 bool refreshRateProbePending = false;
 bool zeroSpeedSafetyReady = false;
 uint32_t targetRefreshRateOverride = 0;
+uintptr_t startupFrameTimerReturnAddress = 0;
 
 uintptr_t ResolveRelativeCall(uint8_t* callInstruction)
 {
@@ -232,7 +236,15 @@ int __cdecl sub_490860(int a1) {
 	const int frameBudgetUs = std::max(sleepFrameBudgetUs, frameTimeUs);
 	const bool isDemoMode = *Variables.isDemoMode;
 	constexpr int gameplayFrameTimeUs = 16667;
-	const bool allowZeroStepSimulation = zeroSpeedSafetyReady && !isDemoMode && frameTimeUs < gameplayFrameTimeUs && a1 == 0;
+	const uintptr_t returnAddress = reinterpret_cast<uintptr_t>(_ReturnAddress());
+	const bool isStartupFrameTimerCall =
+		(startupFrameTimerReturnAddress != 0) && (returnAddress == startupFrameTimerReturnAddress);
+	const bool allowZeroStepSimulation =
+		zeroSpeedSafetyReady &&
+		!isDemoMode &&
+		!isStartupFrameTimerCall &&
+		frameTimeUs < gameplayFrameTimeUs &&
+		a1 == 0;
 	int effectiveFrameTimeUs = frameTimeUs;
 	int effectiveFrameBudgetUs = frameBudgetUs;
 	if (isDemoMode)
@@ -423,13 +435,14 @@ DWORD WINAPI Init(LPVOID bDelay)
 			if (!zeroSpeedSafetyReady)
 				OutputDebugStringA("ToyStory2Fix: High-refresh simulation safety patches unavailable. Falling back to legacy framerate behavior.");
 
-		pattern = hook::pattern("C7 05 ? ? ? ? 00 00 00 00 E8 ? ? ? ? E8 ? ? ? ? 33"); //49BBD8
-		if (!pattern.count_hint(1).empty())
-		{
-			auto* callInstruction = pattern.get_first<uint8_t>(10);
-			sub_490860_addr = ResolveRelativeCall(callInstruction);
-			injector::MakeCALL(callInstruction, sub_490860);
-		}
+			pattern = hook::pattern("C7 05 ? ? ? ? 00 00 00 00 E8 ? ? ? ? E8 ? ? ? ? 33"); //49BBD8
+			if (!pattern.count_hint(1).empty())
+			{
+				auto* callInstruction = pattern.get_first<uint8_t>(10);
+				startupFrameTimerReturnAddress = reinterpret_cast<uintptr_t>(callInstruction + 5);
+				sub_490860_addr = ResolveRelativeCall(callInstruction);
+				injector::MakeCALL(callInstruction, sub_490860);
+			}
 
 		if (sub_490860_addr != 0)
 		{
