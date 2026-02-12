@@ -12,14 +12,15 @@ Toy Story 2 Fix is a program that fixes and enhances Toy Story 2 for the PC. Fea
 Get the latest version [from the releases page](https://github.com/RibShark/ToyStory2Fix/releases/latest). Extract the ZIP file into the folder you installed Toy Story 2 into.
 
 # Configuration
-You can enable or disable any part of the patch by opening the `scripts\ToyStory2Fix.ini` file and setting the options to `true` or `false`.
+Configure options in `scripts\ToyStory2Fix.ini`.
 
-`FixFramerate` limits gameplay to 60 FPS by default. If `NativeRefreshRate` is enabled, the cap follows the detected game-monitor refresh rate (with a primary-monitor fallback during startup). On supported executables, gameplay simulation remains 60 Hz while rendering can run above 60 Hz. Demo mode remains capped at 30 FPS.
+The INI now uses grouped sections:
+* `[Framerate]` for timing/refresh behavior (`enabled`, `native_refresh`, `target_refresh_rate`, `auto_fallback_60`, `startup_guard_ms`, diagnostics/frontend options).
+* `[Rendering]` for widescreen and render-distance behavior (`widescreen`, `increase_render_distance`, `render_distance_scale`, `render_distance_max`).
+* `[Compatibility]` for device/splash compatibility patches (`allow_32bit`, `ignore_vram`, `skip_splash`).
 
-If auto detection still reports 60 Hz on your setup, set `TargetRefreshRate` in `ToyStory2Fix.ini` to a value like `120`, `144`, or `165` to force the cap.
+Framerate defaults keep gameplay simulation at 60 Hz while allowing higher render cadence on supported executables. Demo mode remains capped at 30 FPS.
 
-Advanced framerate safety options are also available in `ToyStory2Fix.ini`:
-* `AutoFallbackTo60` automatically downgrades unstable high-refresh states.
-* `StartupGuardMs` keeps risky timing paths disabled for a short startup window.
-* `AllowFrontendCustomTiming` and `AllowFrontendZeroStep` can be used for frontend/menu timing experiments.
-* `FramerateDiagnostics` enables debug logging via `OutputDebugString`.
+If auto-detection reports 60 Hz on your setup, set `[Framerate] target_refresh_rate` to your panel rate (`120`, `144`, `165`, etc.).
+
+Legacy flat keys under `[ToyStory2Fix]` are still accepted as fallback aliases for compatibility.
