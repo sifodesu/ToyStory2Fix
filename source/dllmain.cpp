@@ -10,7 +10,6 @@ int sleepTime;
 int framerateFactor;
 int targetFrameTimeUs = 16667;
 int sleepFrameBudgetUs = 16949;
-bool useNativeRefreshRate = false;
 bool refreshRateProbePending = false;
 uint32_t targetRefreshRateOverride = 0;
 
@@ -126,6 +125,7 @@ int __cdecl sub_490860(int a1) {
 	const int frameTimeUs = std::max(targetFrameTimeUs, 1);
 	const int frameBudgetUs = std::max(sleepFrameBudgetUs, frameTimeUs);
 	const bool isDemoMode = *Variables.isDemoMode;
+	constexpr int gameplayFrameTimeUs = 16667;
 	// Keep demo mode pacing tied to the original 60->30 behavior.
 	const int effectiveFrameTimeUs = isDemoMode ? 16667 : frameTimeUs;
 	const int effectiveFrameBudgetUs = isDemoMode ? 16949 : frameBudgetUs;
@@ -136,7 +136,9 @@ int __cdecl sub_490860(int a1) {
 
 	UpdateElapsedMicroseconds();
 
-	framerateFactor = ((int)ElapsedMicroseconds.QuadPart / effectiveFrameTimeUs) + 1;
+	// Keep simulation multiplier anchored to the original 60 Hz update timing.
+	// Native refresh only controls frame pacing, not gameplay speed scaling.
+	framerateFactor = ((int)ElapsedMicroseconds.QuadPart / gameplayFrameTimeUs) + 1;
 	// Demo mode needs 30fps maximum
 	if (isDemoMode && framerateFactor < 2)
 		framerateFactor = 2;
@@ -246,10 +248,9 @@ DWORD WINAPI Init(LPVOID bDelay)
 		if (!QueryPerformanceFrequency(&Frequency) || Frequency.QuadPart == 0)
 			Frequency.QuadPart = 1;
 
-		useNativeRefreshRate = iniReader.ReadBoolean(INI_KEY, "NativeRefreshRate", false);
 		targetRefreshRateOverride = std::max(0, iniReader.ReadInteger(INI_KEY, "TargetRefreshRate", 0));
 		refreshRateProbePending = false;
-		if (useNativeRefreshRate)
+		if (iniReader.ReadBoolean(INI_KEY, "NativeRefreshRate", false))
 		{
 			uint32_t refreshRate = targetRefreshRateOverride > 0 ? targetRefreshRateOverride : GetDesktopRefreshRate();
 			ApplyRefreshRate(refreshRate);
