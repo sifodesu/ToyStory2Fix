@@ -43,5 +43,6 @@ jobs:
           path: |
             data\scripts\ToyStory2Fix.asi
             data\scripts\ToyStory2Fix.ini
+            data\ddraw.dll
             data\dsound.dll
             data\dsound.ini
