@@ -10,6 +10,7 @@
 #define PATTERNS_USE_HINTS 0
 
 #include <cassert>
+#include <string>
 #include <vector>
 
 namespace hook
@@ -78,24 +79,18 @@ namespace hook
 
         bool m_matched;
 
-        union
-        {
-            void* m_module;
-            struct
-            {
-                uintptr_t m_rangeStart;
-                uintptr_t m_rangeEnd;
-            };
-        };
+        void* m_module;
+        uintptr_t m_rangeStart;
+        uintptr_t m_rangeEnd;
 
     protected:
         inline pattern(void* module)
-            : m_module(module), m_rangeEnd(0), m_matched(false)
+            : m_module(module), m_rangeStart(0), m_rangeEnd(0), m_matched(false)
         {
         }
 
         inline pattern(uintptr_t begin, uintptr_t end)
-            : m_rangeStart(begin), m_rangeEnd(end), m_matched(false)
+            : m_module(nullptr), m_rangeStart(begin), m_rangeEnd(end), m_matched(false)
         {
         }
 
@@ -113,7 +108,7 @@ namespace hook
 
     public:
         pattern()
-            : m_matched(true)
+            : m_module(nullptr), m_rangeStart(0), m_rangeEnd(0), m_matched(true)
         {
         }
 
@@ -123,7 +118,7 @@ namespace hook
             Initialize(pattern);
         }
 
-        pattern(std::string& pattern)
+        pattern(const std::string& pattern)
             : pattern(getRVA<void>(0))
         {
             Initialize(pattern.c_str());
@@ -145,7 +140,11 @@ namespace hook
         inline pattern& clear(void* module = nullptr)
         {
             if (module)
+            {
                 m_module = module;
+                m_rangeStart = 0;
+                m_rangeEnd = 0;
+            }
             m_matches.clear();
             m_matched = false;
             return *this;
@@ -209,7 +208,7 @@ namespace hook
             Initialize(pattern);
         }
 
-        module_pattern(void* module, std::string& pattern)
+        module_pattern(void* module, const std::string& pattern)
             : pattern(module)
         {
             Initialize(pattern.c_str());
@@ -226,7 +225,7 @@ namespace hook
             Initialize(pattern);
         }
 
-        range_pattern(uintptr_t begin, uintptr_t end, std::string& pattern)
+        range_pattern(uintptr_t begin, uintptr_t end, const std::string& pattern)
             : pattern(begin, end)
         {
             Initialize(pattern.c_str());

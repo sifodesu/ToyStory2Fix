@@ -5,7 +5,7 @@ workspace "ToyStory2Fix"
    location "build"
    objdir ("build/obj")
    buildlog ("build/log/%{prj.name}.log")
-   buildoptions {"-std:c++latest"}
+   buildoptions {"-std:c++17"}
    
    kind "SharedLib"
    language "C++"

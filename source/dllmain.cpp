@@ -177,7 +177,7 @@ DWORD WINAPI Init(LPVOID bDelay)
 	}
 
 	CIniReader iniReader("ToyStory2Fix.ini");
-	constexpr char* INI_KEY = "ToyStory2Fix";
+	constexpr const char* INI_KEY = "ToyStory2Fix";
 
 	if (iniReader.ReadBoolean(INI_KEY, "FixFramerate", true)) {
 		if (timeGetDevCaps(&tc, sizeof(tc)) != TIMERR_NOERROR || tc.wPeriodMin == 0)
