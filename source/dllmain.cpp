@@ -27,6 +27,7 @@ bool allowFrontendCustomTiming = false;
 bool allowFrontendZeroStep = false;
 uint32_t startupGuardMs = 5000;
 ULONGLONG framerateInitTickMs = 0;
+constexpr int kGameplayFrameTimeUs = 16667;
 
 enum class FrameTimerCallsite : uint8_t
 {
@@ -235,6 +236,14 @@ int64_t QueryElapsedMicroseconds(const LARGE_INTEGER& previousTime, LARGE_INTEGE
 	return elapsedUs;
 }
 
+FrameTimerMode GetPreferredGameplayMode()
+{
+	// Zero-step simulation is only meaningful above the base 60 Hz simulation rate.
+	if (zeroSpeedSafetyReady && targetFrameTimeUs < kGameplayFrameTimeUs)
+		return FrameTimerMode::CustomZeroStep;
+	return FrameTimerMode::CustomSafe60;
+}
+
 void InitializeFrameTimerModes()
 {
 	for (auto& state : frameTimerStates)
@@ -245,9 +254,7 @@ void InitializeFrameTimerModes()
 	}
 
 	// Gameplay should always run in custom mode; zero-step only when safety patches are available.
-	SetFrameTimerMode(FrameTimerCallsite::Gameplay,
-		zeroSpeedSafetyReady ? FrameTimerMode::CustomZeroStep : FrameTimerMode::CustomSafe60,
-		"initial setup");
+	SetFrameTimerMode(FrameTimerCallsite::Gameplay, GetPreferredGameplayMode(), "initial setup");
 
 	if (allowFrontendCustomTiming)
 	{
@@ -320,6 +327,10 @@ void ApplyRefreshRate(uint32_t refreshRate)
 	targetFrameTimeUs = (1000000 + (refreshRate / 2)) / refreshRate;
 	for (auto& state : frameTimerStates)
 		ResetFrameTimerState(state);
+
+	// Refresh rate can be detected again after startup; keep gameplay mode in sync.
+	if (gameplayFrameTimerReturnAddress != 0)
+		SetFrameTimerMode(FrameTimerCallsite::Gameplay, GetPreferredGameplayMode(), "refresh update");
 }
 
 uint32_t GetDesktopRefreshRate()
@@ -633,7 +644,7 @@ int RunCustomFrameTimer(FrameTimerCallsite callsite, FrameTimerState& state, boo
 	const UINT timerPeriod = tc.wPeriodMin ? tc.wPeriodMin : 1;
 	const int frameTimeUs = std::max(targetFrameTimeUs, 1);
 	const bool isDemoMode = *Variables.isDemoMode;
-	constexpr int gameplayFrameTimeUs = 16667;
+	constexpr int gameplayFrameTimeUs = kGameplayFrameTimeUs;
 	int effectiveFrameTimeUs = frameTimeUs;
 	if (isDemoMode)
 	{
@@ -672,7 +683,16 @@ int RunCustomFrameTimer(FrameTimerCallsite callsite, FrameTimerState& state, boo
 	else
 	{
 		// Keep simulation updates anchored to the original 60 Hz timing.
-		state.simulationAccumulatorUs += elapsedUs;
+		int64_t simulationDeltaUs = elapsedUs;
+		if (allowZeroStepSimulation && frameTimeUs < gameplayFrameTimeUs)
+		{
+			// Quantize small frame-time jitter to target cadence for smoother 120/144/160 pacing.
+			const int64_t jitterAbsUs = (elapsedUs >= frameTimeUs) ? (elapsedUs - frameTimeUs) : (frameTimeUs - elapsedUs);
+			const int64_t jitterToleranceUs = std::max<int64_t>(800, frameTimeUs / 3);
+			if (jitterAbsUs <= jitterToleranceUs)
+				simulationDeltaUs = frameTimeUs;
+		}
+		state.simulationAccumulatorUs += simulationDeltaUs;
 		const int64_t maxAccumulatorUs = static_cast<int64_t>(gameplayFrameTimeUs) * 16;
 		if (state.simulationAccumulatorUs > maxAccumulatorUs)
 			state.simulationAccumulatorUs = maxAccumulatorUs;
@@ -784,7 +804,10 @@ int __cdecl sub_490860(int a1)
 	if (state.mode == FrameTimerMode::LegacyPassthrough)
 		return _sub_490860 ? _sub_490860(a1) : 0;
 
-	const bool allowZeroStepSimulation = (state.mode == FrameTimerMode::CustomZeroStep) && zeroSpeedSafetyReady;
+	const bool allowZeroStepSimulation =
+		(state.mode == FrameTimerMode::CustomZeroStep) &&
+		zeroSpeedSafetyReady &&
+		targetFrameTimeUs < kGameplayFrameTimeUs;
 	LogDiagnostic("ToyStory2Fix: FrameTimer %s mode=%s a1=%d\n",
 		GetCallsiteName(callsite), GetModeName(state.mode), a1);
 	return RunCustomFrameTimer(callsite, state, allowZeroStepSimulation);
