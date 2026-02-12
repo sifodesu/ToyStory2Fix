@@ -15,7 +15,6 @@ LARGE_INTEGER Frequency;
 int sleepTime;
 int framerateFactor;
 int targetFrameTimeUs = 16667;
-int sleepFrameBudgetUs = 16949;
 bool refreshRateProbePending = false;
 bool zeroSpeedSafetyReady = false;
 uint32_t targetRefreshRateOverride = 0;
@@ -49,6 +48,7 @@ struct FrameTimerState
 {
 	FrameTimerMode mode = FrameTimerMode::LegacyPassthrough;
 	LARGE_INTEGER previousTime = {};
+	int64_t nextFrameDeadlineQpc = 0;
 	int64_t simulationAccumulatorUs = 0;
 	uint32_t consecutiveZeroFrames = 0;
 	uint32_t framesSinceNonZero = 0;
@@ -203,6 +203,7 @@ bool IsStartupGuardActive()
 void ResetFrameTimerState(FrameTimerState& state)
 {
 	state.previousTime.QuadPart = 0;
+	state.nextFrameDeadlineQpc = 0;
 	state.simulationAccumulatorUs = 0;
 	state.consecutiveZeroFrames = 0;
 	state.framesSinceNonZero = 0;
@@ -317,7 +318,6 @@ void ApplyRefreshRate(uint32_t refreshRate)
 		refreshRate = 60;
 
 	targetFrameTimeUs = (1000000 + (refreshRate / 2)) / refreshRate;
-	sleepFrameBudgetUs = targetFrameTimeUs + std::max(1, targetFrameTimeUs / 60);
 	for (auto& state : frameTimerStates)
 		ResetFrameTimerState(state);
 }
@@ -632,27 +632,25 @@ int RunCustomFrameTimer(FrameTimerCallsite callsite, FrameTimerState& state, boo
 {
 	const UINT timerPeriod = tc.wPeriodMin ? tc.wPeriodMin : 1;
 	const int frameTimeUs = std::max(targetFrameTimeUs, 1);
-	const int frameBudgetUs = std::max(sleepFrameBudgetUs, frameTimeUs);
 	const bool isDemoMode = *Variables.isDemoMode;
 	constexpr int gameplayFrameTimeUs = 16667;
 	int effectiveFrameTimeUs = frameTimeUs;
-	int effectiveFrameBudgetUs = frameBudgetUs;
 	if (isDemoMode)
 	{
 		// Keep demo mode pacing tied to the original 60->30 behavior.
 		effectiveFrameTimeUs = 16667;
-		effectiveFrameBudgetUs = 16949;
 	}
 	else if (!allowZeroStepSimulation && frameTimeUs < gameplayFrameTimeUs)
 	{
 		// If zero-step simulation is unavailable, keep simulation at safe 60 Hz pacing.
 		effectiveFrameTimeUs = gameplayFrameTimeUs;
-		effectiveFrameBudgetUs = gameplayFrameTimeUs + std::max(1, gameplayFrameTimeUs / 60);
 	}
 	timeBeginPeriod(timerPeriod);
 
 	if (state.previousTime.QuadPart == 0)
 		QueryPerformanceCounter(&state.previousTime);
+	if (state.nextFrameDeadlineQpc == 0)
+		state.nextFrameDeadlineQpc = state.previousTime.QuadPart;
 
 	LARGE_INTEGER currentTime = {};
 	int64_t elapsedUs = QueryElapsedMicroseconds(state.previousTime, currentTime);
@@ -700,18 +698,30 @@ int RunCustomFrameTimer(FrameTimerCallsite callsite, FrameTimerState& state, boo
 
 	const int pacingFactor = isDemoMode ? std::max(framerateFactor, 2) : 1;
 	const int pacingFrameTimeUs = effectiveFrameTimeUs * pacingFactor;
-	const int pacingFrameBudgetUs = effectiveFrameBudgetUs * pacingFactor;
-	const int64_t sleepMarginUs = std::max<int64_t>(2000, pacingFrameBudgetUs / 6);
-	const int64_t yieldMarginUs = std::max<int64_t>(1000, pacingFrameTimeUs / 8);
+	const int64_t frameDurationQpc =
+		std::max<int64_t>(1, (static_cast<int64_t>(pacingFrameTimeUs) * Frequency.QuadPart + 500000) / 1000000);
+
+	int64_t targetDeadlineQpc = state.nextFrameDeadlineQpc + frameDurationQpc;
+	const int64_t maxLagQpc = frameDurationQpc * 4;
+	if (currentTime.QuadPart > targetDeadlineQpc + maxLagQpc)
+		targetDeadlineQpc = currentTime.QuadPart + frameDurationQpc;
+
+	// Preserve a larger sleep guard for high-refresh rates where Sleep(1) jitter is costly.
+	const bool highRefreshPacing = pacingFrameTimeUs <= 10000;
+	const int64_t sleepMarginUs = highRefreshPacing
+		? std::max<int64_t>(3500, pacingFrameTimeUs / 2)
+		: std::max<int64_t>(2000, pacingFrameTimeUs / 5);
+	const int64_t yieldMarginUs = highRefreshPacing
+		? std::max<int64_t>(1200, pacingFrameTimeUs / 6)
+		: std::max<int64_t>(800, pacingFrameTimeUs / 10);
+	const int64_t spinMarginUs = highRefreshPacing ? 300 : 150;
 
 	sleepTime = 0;
 	for (;;)
 	{
-		elapsedUs = QueryElapsedMicroseconds(state.previousTime, currentTime);
-		if (elapsedUs < 0)
-			elapsedUs = 0;
-
-		const int64_t remainingUs = static_cast<int64_t>(pacingFrameTimeUs) - elapsedUs;
+		QueryPerformanceCounter(&currentTime);
+		const int64_t remainingQpc = targetDeadlineQpc - currentTime.QuadPart;
+		const int64_t remainingUs = (remainingQpc * 1000000) / Frequency.QuadPart;
 		if (remainingUs <= 0)
 			break;
 
@@ -730,11 +740,15 @@ int RunCustomFrameTimer(FrameTimerCallsite callsite, FrameTimerState& state, boo
 
 		if (remainingUs > yieldMarginUs)
 			Sleep(0);
-		else
+		else if (remainingUs > spinMarginUs)
 			SwitchToThread();
+		else
+			YieldProcessor();
 	}
 
+	QueryPerformanceCounter(&currentTime);
 	state.previousTime = currentTime;
+	state.nextFrameDeadlineQpc = targetDeadlineQpc;
 	timeEndPeriod(timerPeriod);
 	// Match the original function contract: return millisecond clock value.
 	return static_cast<int>(timeGetTime());
