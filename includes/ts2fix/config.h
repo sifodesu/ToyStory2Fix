@@ -19,6 +19,7 @@ struct FramerateConfig
 struct RenderingConfig
 {
 	bool widescreen = true;
+	bool zBufferFix = true;
 	bool increaseRenderDistance = true;
 	float renderDistanceScale = 1.5f;
 	float renderDistanceMax = 18000.0f;

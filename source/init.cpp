@@ -8,6 +8,7 @@
 #include "ts2fix/pattern_utils.h"
 #include "ts2fix/zero_speed_safety.h"
 #include "ts2fix/widescreen.h"
+#include "ts2fix/zbuffer_fix.h"
 
 #include <MMSystem.h>
 #include <algorithm>
@@ -188,6 +189,8 @@ DWORD WINAPI Init(LPVOID delayed)
 
 	InstallFrameTimerHooks(config);
 	ApplyMiscPatches(config);
+	if (config.rendering.zBufferFix)
+		InstallZBufferFixHook();
 
 	if (config.rendering.widescreen)
 		InstallWidescreenHook();
