@@ -8,7 +8,7 @@ namespace
 {
 constexpr const char* kLegacySection = "ToyStory2Fix";
 
-bool HasKey(const CIniReader& iniReader, const char* section, const char* key)
+bool HasKey(CIniReader& iniReader, const char* section, const char* key)
 {
 	const auto sectionIt = iniReader.data.find(section);
 	if (sectionIt == iniReader.data.end())
