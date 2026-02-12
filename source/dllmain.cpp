@@ -232,7 +232,7 @@ int __cdecl sub_490860(int a1) {
 	const int frameBudgetUs = std::max(sleepFrameBudgetUs, frameTimeUs);
 	const bool isDemoMode = *Variables.isDemoMode;
 	constexpr int gameplayFrameTimeUs = 16667;
-	const bool allowZeroStepSimulation = zeroSpeedSafetyReady && !isDemoMode && frameTimeUs < gameplayFrameTimeUs && a1 != 0;
+	const bool allowZeroStepSimulation = zeroSpeedSafetyReady && !isDemoMode && frameTimeUs < gameplayFrameTimeUs && a1 == 0;
 	int effectiveFrameTimeUs = frameTimeUs;
 	int effectiveFrameBudgetUs = frameBudgetUs;
 	if (isDemoMode)
