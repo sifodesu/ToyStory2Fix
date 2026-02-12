@@ -1,6 +1,6 @@
 LIBRARY ddraw
 EXPORTS
-    DirectDrawCreate=_DirectDrawCreate@12
-    DirectDrawCreateEx=_DirectDrawCreateEx@16
-    DirectDrawEnumerateA=_DirectDrawEnumerateA@8
+    DirectDrawCreate=_TS2Fix_DirectDrawCreate@12
+    DirectDrawCreateEx=_TS2Fix_DirectDrawCreateEx@16
+    DirectDrawEnumerateA=_TS2Fix_DirectDrawEnumerateA@8
     TS2ModernDepthProxyMarker=_TS2ModernDepthProxyMarker@0

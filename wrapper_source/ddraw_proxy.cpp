@@ -582,7 +582,8 @@ void HookInterfaceByIid(void* object, REFIID iid)
 	if (object == nullptr)
 		return;
 
-	if (InlineIsEqualGUID(iid, IID_IDirectDraw) || InlineIsEqualGUID(iid, IID_IDirectDraw2) || InlineIsEqualGUID(iid, IID_IDirectDraw3))
+	// Newer Windows SDKs don't expose IID_IDirectDraw3; IDirectDraw3 isn't used by TS2 anyway.
+	if (InlineIsEqualGUID(iid, IID_IDirectDraw) || InlineIsEqualGUID(iid, IID_IDirectDraw2))
 	{
 		HookDirectDrawInterface(object, false);
 		return;
@@ -624,7 +625,9 @@ extern "C" __declspec(dllexport) BOOL WINAPI TS2ModernDepthProxyMarker()
 	return TRUE;
 }
 
-extern "C" __declspec(dllexport) HRESULT WINAPI DirectDrawCreate(GUID* guid, LPDIRECTDRAW* directDraw, IUnknown* outer)
+// Don't define DirectDrawCreate* by those exact names; the Windows SDK declares them in <ddraw.h>.
+// We export the expected names via wrapper_source/ddraw_proxy.def to avoid C/C++ linkage conflicts.
+extern "C" HRESULT WINAPI TS2Fix_DirectDrawCreate(GUID* guid, LPDIRECTDRAW* directDraw, IUnknown* outer)
 {
 	EnsureInitialized();
 	EnsureWrapperTimingInitialized();
@@ -637,7 +640,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI DirectDrawCreate(GUID* guid, LPD
 	return hr;
 }
 
-extern "C" __declspec(dllexport) HRESULT WINAPI DirectDrawCreateEx(GUID* guid, LPVOID* directDraw, REFIID iid, IUnknown* outer)
+extern "C" HRESULT WINAPI TS2Fix_DirectDrawCreateEx(GUID* guid, LPVOID* directDraw, REFIID iid, IUnknown* outer)
 {
 	EnsureInitialized();
 	EnsureWrapperTimingInitialized();
@@ -650,7 +653,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI DirectDrawCreateEx(GUID* guid, L
 	return hr;
 }
 
-extern "C" __declspec(dllexport) HRESULT WINAPI DirectDrawEnumerateA(LPDDENUMCALLBACKA callback, LPVOID context)
+extern "C" HRESULT WINAPI TS2Fix_DirectDrawEnumerateA(LPDDENUMCALLBACKA callback, LPVOID context)
 {
 	EnsureInitialized();
 	if (g_realDirectDrawEnumerateA == nullptr)

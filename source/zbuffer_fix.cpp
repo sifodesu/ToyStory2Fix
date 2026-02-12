@@ -68,7 +68,7 @@ bool PatchProjectionDepthRange()
 
 	if (pattern.count_hint(1).empty())
 	{
-		Log("ZBuffer", "Projection depth-range pattern not found; precision patch skipped.\n");
+		ts2fix::Log("ZBuffer", "Projection depth-range pattern not found; precision patch skipped.\n");
 		return false;
 	}
 
@@ -85,7 +85,7 @@ bool PatchProjectionDepthRange()
 		projection[0x4C / sizeof(float)] = g_patchedFarPlane;
 	}
 
-	Log("ZBuffer", "Projection depth range patched near=%.1f far=%.1f.\n", g_patchedNearPlane, g_patchedFarPlane);
+	ts2fix::Log("ZBuffer", "Projection depth range patched near=%.1f far=%.1f.\n", g_patchedNearPlane, g_patchedFarPlane);
 	return true;
 }
 } // namespace
