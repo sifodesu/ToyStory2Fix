@@ -425,6 +425,7 @@ bool InstallZeroSpeedSafetyPatches()
 	bool hasMulPatch = false;
 	bool hasDivPatch = false;
 	bool hasMenuDivPatch = false;
+	bool hasRenderDeltaPatch = false;
 
 	auto pattern = hook::pattern("8B 46 68 8B 56 70 0F AF 05 ? ? ? ? 89 46 68 8B 0D ? ? ? ? 0F AF 4E 6C 89 4E 6C 0F AF 15 ? ? ? ?");
 	if (!pattern.count_hint(1).empty())
@@ -486,7 +487,31 @@ bool InstallZeroSpeedSafetyPatches()
 		hasMenuDivPatch = true;
 	}
 
-	ready = hasMulPatch && hasDivPatch && hasMenuDivPatch;
+	// Gameplay render path accumulates a frame delta derived from speedMultiplier.
+	// Clamp that read to at least 1 so zero-step simulation doesn't stall rendering.
+	pattern = hook::pattern("8B 0D ? ? ? ? B8 B7 60 0B B6 C1 E1 10 F7 E9 03 D1 C1 FA 08 8B C2 C1 E8 1F 03 D0 52 E8 ? ? ? ? 83 C4 0C");
+	if (!pattern.count_hint(1).empty())
+	{
+		struct LoadRenderSafeSpeedHook
+		{
+			void operator()(injector::reg_pack& regs)
+			{
+				regs.ecx = static_cast<uint32_t>(GetSafeSpeedMultiplierValue());
+			}
+		}; injector::MakeInline<LoadRenderSafeSpeedHook>(pattern.get_first(0), pattern.get_first(6));
+		hasRenderDeltaPatch = true;
+	}
+
+	if (!hasMulPatch)
+		LogMessage("ToyStory2Fix: Zero-step safety missing multiply patch.\n");
+	if (!hasDivPatch)
+		LogMessage("ToyStory2Fix: Zero-step safety missing divide patch.\n");
+	if (!hasMenuDivPatch)
+		LogMessage("ToyStory2Fix: Zero-step safety missing menu divide patch.\n");
+	if (!hasRenderDeltaPatch)
+		LogMessage("ToyStory2Fix: Zero-step safety missing render delta patch.\n");
+
+	ready = hasMulPatch && hasDivPatch && hasMenuDivPatch && hasRenderDeltaPatch;
 	return ready;
 }
 
